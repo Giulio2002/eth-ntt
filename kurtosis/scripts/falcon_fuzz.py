@@ -23,8 +23,8 @@ def decode_pk(pk_bytes):
     return h
 
 def ntt_fw_precompile(coeffs, rpc):
-    """NTT forward via generic precompile 0x12."""
-    hdr = b'\x00'*31 + b'\x02' + b'\x00'*31 + b'\x01' + b'\x00'*30 + b'\x02\x00' + b'\x30\x01\x31'
+    """NTT forward via generic precompile 0x12. New format: n(32) | q(32) | psi(32) | coeffs."""
+    hdr = (512).to_bytes(32, 'big') + (12289).to_bytes(32, 'big') + (49).to_bytes(32, 'big')
     cb = b''.join(c.to_bytes(2, 'big') for c in coeffs)
     r = requests.post(rpc, json={'jsonrpc': '2.0', 'method': 'eth_call',
         'params': [{'to': '0x' + '0'*38 + '12', 'data': '0x' + (hdr + cb).hex()}, 'latest'], 'id': 1})
