@@ -207,9 +207,8 @@ fn read_coeffs(data: &[u8], n: usize, cb: usize) -> Vec<u64> {
     coeffs
 }
 
-/// Falcon-512 verify precompile.
+/// Falcon-512 verify precompile (v1 format).
 /// Input: salt_msg_len(32 BE) | s2_compact(1024) | ntth_compact(1024) | salt_msg(salt_msg_len)
-/// Output: 32 bytes (0x00..01 valid, 0x00..00 invalid)
 pub fn falcon_verify_precompile(input: &[u8]) -> Option<Vec<u8>> {
     if input.len() < 32 + 2 * COMPACT_SIZE {
         return None;
@@ -221,12 +220,25 @@ pub fn falcon_verify_precompile(input: &[u8]) -> Option<Vec<u8>> {
     let s2_compact = &input[32..32 + COMPACT_SIZE];
     let ntth_compact = &input[32 + COMPACT_SIZE..32 + 2 * COMPACT_SIZE];
     let salt_msg = &input[32 + 2 * COMPACT_SIZE..];
+    to_result(falcon_verify(salt_msg, s2_compact, ntth_compact))
+}
 
-    let valid = falcon_verify(salt_msg, s2_compact, ntth_compact);
-    let mut result = vec![0u8; 32];
-    if valid {
-        result[31] = 1;
+/// Falcon-512 verify precompile (v2 format — zero-copy friendly).
+/// Input: s2_compact(1024) | ntth_compact(1024) | salt_msg(var)
+/// No header needed — s2 and ntth are fixed size, salt_msg is the remainder.
+pub fn falcon_verify_precompile_v2(input: &[u8]) -> Option<Vec<u8>> {
+    if input.len() < 2 * COMPACT_SIZE {
+        return None;
     }
+    let s2_compact = &input[0..COMPACT_SIZE];
+    let ntth_compact = &input[COMPACT_SIZE..2 * COMPACT_SIZE];
+    let salt_msg = &input[2 * COMPACT_SIZE..];
+    to_result(falcon_verify(salt_msg, s2_compact, ntth_compact))
+}
+
+fn to_result(valid: bool) -> Option<Vec<u8>> {
+    let mut result = vec![0u8; 32];
+    if valid { result[31] = 1; }
     Some(result)
 }
 

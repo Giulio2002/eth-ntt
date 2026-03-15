@@ -108,6 +108,13 @@ int32_t eth_ntt_falcon_verify(
     const uint8_t *input, size_t input_len,
     uint8_t **output_out, size_t *output_len_out);
 
+/* Falcon-512 verify v2: zero-copy layout.
+ * Input: s2_compact(1024) | ntth_compact(1024) | salt_msg(var)
+ * Output: 32 bytes bool */
+int32_t eth_ntt_falcon_verify_v2(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
 /* Generalized LpNorm for any lattice-based signature.
  * Input: q(32 BE) | n(32 BE) | bound(32 BE) | cb(32 BE) | s1(n*cb) | s2(n*cb) | hashed(n*cb)
  * Computes centered L2: ||(hashed - s1) mod q||^2 + ||s2||^2 < bound

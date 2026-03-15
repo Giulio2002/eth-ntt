@@ -246,6 +246,18 @@ func FalconVerify(input []byte) ([]byte, error) {
 	return collectOutput(rc, outPtr, outLen)
 }
 
+// FalconVerifyV2 runs Falcon-512 verification with zero-copy layout.
+// Input: s2_compact(1024) | ntth_compact(1024) | salt_msg(var)
+func FalconVerifyV2(input []byte) ([]byte, error) {
+	if len(input) < 2048 {
+		return nil, ErrInputTooShort
+	}
+	var outPtr *C.uint8_t
+	var outLen C.size_t
+	rc := C.eth_ntt_falcon_verify_v2((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	return collectOutput(rc, outPtr, outLen)
+}
+
 // LpNorm runs the generalized lattice norm check.
 // Input: q(32) | n(32) | bound(32) | cb(32) | s1(n×cb) | s2(n×cb) | hashed(n×cb)
 // Returns 32 bytes: 0x00..01 if valid, 0x00..00 if invalid.
