@@ -1,6 +1,3 @@
 /target
 *.log
 erigon/
-contracts/
-scripts/
-devnet/
