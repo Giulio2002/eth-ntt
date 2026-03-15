@@ -101,6 +101,14 @@ int32_t eth_ntt_falcon_norm(
     const uint8_t *input, size_t input_len,
     uint8_t **output_out, size_t *output_len_out);
 
+/* Generalized LpNorm for any lattice-based signature.
+ * Input: q(32 BE) | n(32 BE) | bound(32 BE) | cb(32 BE) | s1(n*cb) | s2(n*cb) | hashed(n*cb)
+ * Computes centered L2: ||(hashed - s1) mod q||^2 + ||s2||^2 < bound
+ * Output: 32 bytes (0x00..01 valid, 0x00..00 invalid) */
+int32_t eth_ntt_lp_norm(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
 #ifdef __cplusplus
 }
 #endif

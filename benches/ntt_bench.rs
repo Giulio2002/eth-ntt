@@ -230,7 +230,7 @@ fn bench_precompile_ntt(c: &mut Criterion) {
         b.iter(|| ntt_fw_precompile(black_box(&input)))
     });
 
-    let (_, fwd_out) = ntt_fw_precompile(&input).unwrap();
+    let fwd_out = ntt_fw_precompile(&input).unwrap();
     let ntt_poly = decode_output(&fwd_out, falcon.n, cb);
     let inv_input = encode_ntt_input(&falcon, &ntt_poly);
     group.bench_function("ntt_inv/falcon512", |b| {
@@ -366,4 +366,87 @@ criterion_group!(
     bench_table_generation,
     bench_falcon_verify,
 );
-criterion_main!(benches);
+criterion_main!(benches, compact_benches);
+
+// ─── Compact format benchmarks ───
+
+use eth_ntt::compact;
+
+fn bench_compact_ntt_fw(c: &mut Criterion) {
+    let coeffs: Vec<u64> = (0..512).map(|i| i % 12289).collect();
+    let input = compact::pack(&coeffs);
+    c.bench_function("compact_ntt_fw", |b| {
+        b.iter(|| compact::ntt_fw_compact(black_box(&input)))
+    });
+}
+
+fn bench_compact_vecmulmod(c: &mut Criterion) {
+    let a: Vec<u64> = (0..512).map(|i| i % 12289).collect();
+    let b: Vec<u64> = (0..512).map(|i| (i * 7) % 12289).collect();
+    let mut input = compact::pack(&a);
+    input.extend_from_slice(&compact::pack(&b));
+    c.bench_function("compact_vecmulmod", |b_| {
+        b_.iter(|| compact::vecmulmod_compact(black_box(&input)))
+    });
+}
+
+fn bench_compact_shake256_htp(c: &mut Criterion) {
+    let input = b"test salt and message data for hash to point";
+    c.bench_function("compact_shake256_htp", |b| {
+        b.iter(|| compact::shake256_htp(black_box(input)))
+    });
+}
+
+fn bench_compact_norm(c: &mut Criterion) {
+    let s1: Vec<u64> = (0..512).map(|i| i % 12289).collect();
+    let s2: Vec<u64> = (0..512).map(|i| (i * 3) % 12289).collect();
+    let hashed: Vec<u64> = (0..512).map(|i| (i * 7 + 100) % 12289).collect();
+    let s1c = compact::pack(&s1);
+    let s2c = compact::pack(&s2);
+    let hc = compact::pack(&hashed);
+    c.bench_function("compact_falcon_norm", |b| {
+        b.iter(|| compact::falcon_norm(black_box(&s1c), black_box(&s2c), black_box(&hc)))
+    });
+}
+
+fn bench_compact_full_verify(c: &mut Criterion) {
+    // Build a valid verification scenario
+    let params = FastNttParams::new(12289, 512, 49).unwrap();
+    let h: Vec<u64> = (0..512).map(|i| (i * 13 + 1) % 12289).collect();
+    let s2: Vec<u64> = (0..512).map(|i| ((i as i64 * 3 % 5 - 2).rem_euclid(12289)) as u64).collect();
+    let ntth = ntt_fw_fast(&h, &params);
+
+    let salt_msg = b"test salt 40 bytes xxxxxxxxxxxxxxxxxxxxxxxxxx msg";
+    let hashed = compact::shake256_htp(salt_msg);
+    let hashed_coeffs = compact::unpack(&hashed).unwrap();
+
+    let ntt_s2 = ntt_fw_fast(&s2, &params);
+    let product = vec_mul_mod_fast(&ntt_s2, &ntth, 12289);
+    let s1 = ntt_inv_fast(&product, &params);
+
+    let s1c = compact::pack(&s1);
+    let s2c = compact::pack(&s2);
+    let ntthc = compact::pack(&ntth);
+
+    c.bench_function("compact_full_pipeline", |b| {
+        b.iter(|| {
+            let hashed = compact::shake256_htp(black_box(salt_msg));
+            let s2_coeffs = compact::unpack(black_box(&s2c)).unwrap();
+            let ntth_coeffs = compact::unpack(black_box(&ntthc)).unwrap();
+            let ntt_s2 = ntt_fw_fast(&s2_coeffs, &params);
+            let product = vec_mul_mod_fast(&ntt_s2, &ntth_coeffs, 12289);
+            let s1 = ntt_inv_fast(&product, &params);
+            let hashed_c = compact::unpack(&hashed).unwrap();
+            compact::falcon_norm_coeffs(&s1, &s2_coeffs, &hashed_c)
+        })
+    });
+}
+
+criterion_group!(
+    compact_benches,
+    bench_compact_ntt_fw,
+    bench_compact_vecmulmod,
+    bench_compact_shake256_htp,
+    bench_compact_norm,
+    bench_compact_full_verify,
+);

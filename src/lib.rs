@@ -1,3 +1,4 @@
+pub mod compact;
 pub mod fast;
 mod ffi;
 mod field;

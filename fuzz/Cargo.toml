@@ -40,3 +40,10 @@ path = "fuzz_targets/fuzz_vecaddmod.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_falcon_compact"
+path = "fuzz_targets/fuzz_falcon_compact.rs"
+test = false
+doc = false
+bench = false
