@@ -4,12 +4,20 @@ Six precompiles following existing Ethereum conventions.
 
 | Address | Name | Pattern | Analogous to |
 |---------|------|---------|--------------|
-| `0x12` | NTT_FW | length-prefixed fields | modexp (`0x05`) |
-| `0x13` | NTT_INV | length-prefixed fields | modexp (`0x05`) |
-| `0x14` | VECMULMOD | length-prefixed fields | modexp (`0x05`) |
-| `0x15` | VECADDMOD | length-prefixed fields | modexp (`0x05`) |
+| `0x12` | NTT_FW | 32-byte padded params + coefficients | ecrecover (`0x01`) |
+| `0x13` | NTT_INV | 32-byte padded params + coefficients | ecrecover (`0x01`) |
+| `0x14` | VECMULMOD | 32-byte padded params + two vectors | ecrecover (`0x01`) |
+| `0x15` | VECADDMOD | 32-byte padded params + two vectors | ecrecover (`0x01`) |
 | `0x16` | SHAKE256 | output-length + data | SHA-256 (`0x02`) |
-| `0x17` | FALCON_VERIFY | fixed arrays + bool | bn256Pairing (`0x08`) |
+| `0x17` | FALCON_VERIFY | fixed arrays + variable data → bool | bn256Pairing (`0x08`) |
+
+### Conventions
+
+- All parameters are zero-padded to 32 bytes, big-endian (standard EVM word).
+- Coefficient byte width `cb = ceil(bits(q) / 8)` is derived from `q` — not passed explicitly.
+- Coefficients are flat big-endian arrays: coefficient `i` at bytes `[i×cb .. (i+1)×cb]`.
+- Boolean outputs are 32-byte words: `0x00..01` (true) or `0x00..00` (false), same as `bn256Pairing`.
+- Error on malformed input (returns empty / fails the call).
 
 ---
 
@@ -17,15 +25,15 @@ Six precompiles following existing Ethereum conventions.
 
 Forward Number Theoretic Transform over Z_q.
 
-**Input** (like modexp — length-prefixed variable fields):
+**Input:**
 ```
-q_len    (32 bytes BE)   — byte length of modulus q
-psi_len  (32 bytes BE)   — byte length of root of unity psi
-n        (32 bytes BE)   — polynomial dimension (power of 2)
-q        (q_len bytes)   — prime modulus, big-endian
-psi      (psi_len bytes) — primitive 2n-th root of unity mod q, big-endian
-coeffs   (n × cb bytes)  — input coefficients, big-endian (cb = ceil(bits(q) / 8))
+n      (32 bytes BE)   — polynomial dimension (must be power of 2)
+q      (32 bytes BE)   — prime modulus
+psi    (32 bytes BE)   — primitive 2n-th root of unity mod q
+coeffs (n × cb bytes)  — input coefficients, big-endian
 ```
+
+`cb = ceil(bits(q) / 8)` — derived from `q`, not passed.
 
 **Output:** `n × cb` bytes — NTT-transformed coefficients, big-endian.
 
@@ -45,13 +53,12 @@ Inverse NTT with n⁻¹ mod q scaling. Same input/output format as `0x12`.
 
 Element-wise modular multiplication: `result[i] = a[i] × b[i] mod q`.
 
-**Input** (like modexp — length-prefixed):
+**Input:**
 ```
-q_len  (32 bytes BE)
-n      (32 bytes BE)
-q      (q_len bytes)   — modulus, big-endian
-a      (n × cb bytes)  — first vector, big-endian coefficients
-b      (n × cb bytes)  — second vector, big-endian coefficients
+n  (32 bytes BE)   — vector dimension
+q  (32 bytes BE)   — modulus
+a  (n × cb bytes)  — first vector, big-endian coefficients
+b  (n × cb bytes)  — second vector, big-endian coefficients
 ```
 
 **Output:** `n × cb` bytes — product vector, big-endian.
@@ -72,7 +79,7 @@ Element-wise modular addition. Same format as `0x14`.
 
 SHAKE256 extendable output function.
 
-**Input** (like SHA-256 — hash with output length):
+**Input:**
 ```
 output_len  (32 bytes BE)  — desired output length in bytes
 data        (var bytes)    — data to hash
@@ -86,9 +93,9 @@ data        (var bytes)    — data to hash
 
 ## `0x17` — FALCON_VERIFY
 
-Full Falcon-512 signature verification. Performs SHAKE256 hash-to-point, forward NTT, pointwise multiply, inverse NTT, and centered L2 norm check in a single call.
+Full Falcon-512 signature verification in a single call. Performs SHAKE256 hash-to-point, forward NTT, pointwise multiply, inverse NTT, and centered L2 norm check.
 
-**Input** (like bn256Pairing — fixed-size arrays followed by variable data):
+**Input:**
 ```
 s2       (1024 bytes)  — signature polynomial, 512 × uint16 big-endian
 ntth     (1024 bytes)  — public key in NTT domain, 512 × uint16 big-endian
@@ -97,14 +104,14 @@ salt_msg (var bytes)   — nonce (40 bytes) concatenated with message
 
 Each coefficient is a 2-byte big-endian unsigned integer in [0, 12288].
 
-**Output:** 32 bytes — `0x0000...0001` if valid, `0x0000...0000` if invalid. Same convention as bn256Pairing.
+**Output:** 32 bytes — `0x0000...0001` if valid, `0x0000...0000` if invalid.
 
 **Gas:** 2800
 
 **Parameters** (hardcoded, Falcon-512):
 - q = 12289
 - n = 512
-- ψ = 49
+- psi = 49
 - L2 norm bound = 34034726
 
 ---
@@ -113,12 +120,12 @@ Each coefficient is a 2-byte big-endian unsigned integer in [0, 12288].
 
 | Precompile | Execution time | Gas |
 |---|---|---|
-| NTT_FW | 2.8 µs | 600 |
-| NTT_INV | 2.8 µs | 600 |
+| NTT_FW | 2.8 us | 600 |
+| NTT_INV | 2.8 us | 600 |
 | VECMULMOD | 590 ns | variable |
 | VECADDMOD | 590 ns | variable |
-| SHAKE256 | 1.8 µs | variable |
-| **FALCON_VERIFY** | **8.1 µs** | **2800** |
+| SHAKE256 | 1.8 us | variable |
+| **FALCON_VERIFY** | **8.1 us** | **2800** |
 
 Gas prices target 350 Mgas/s throughput.
 
@@ -158,7 +165,7 @@ if iszero(staticcall(gas(), 0x17, 0, calldatasize(), 0, 0x20)) { revert(0,0) }
 return(0, 0x20)
 ```
 
-**Calldata:** `s2(1024, 512×uint16 BE) | ntth(1024, 512×uint16 BE) | salt(40) | msg(var)`
+**Calldata:** `s2(1024, 512 x uint16 BE) | ntth(1024, 512 x uint16 BE) | salt(40) | msg(var)`
 
 | Metric | Value |
 |---|---|

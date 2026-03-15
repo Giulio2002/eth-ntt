@@ -145,16 +145,12 @@ func encodeWord(val uint64) []byte {
 }
 
 func encodeNttInput(q, psi uint64, n int, coeffs []uint64) []byte {
-	qBytes := big.NewInt(int64(q)).Bytes()
-	psiBytes := big.NewInt(int64(psi)).Bytes()
 	coeffByteLen := (big.NewInt(int64(q)).BitLen() + 7) / 8
 
 	var out []byte
-	out = append(out, encodeWord(uint64(len(qBytes)))...)
-	out = append(out, encodeWord(uint64(len(psiBytes)))...)
 	out = append(out, encodeWord(uint64(n))...)
-	out = append(out, qBytes...)
-	out = append(out, psiBytes...)
+	out = append(out, encodeWord(q)...)
+	out = append(out, encodeWord(psi)...)
 
 	for _, c := range coeffs {
 		cb := make([]byte, coeffByteLen)

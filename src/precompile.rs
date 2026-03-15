@@ -120,43 +120,33 @@ fn encode_vector_u64(v: &[u64], coeff_bytes: usize) -> Vec<u8> {
 }
 
 /// Try to decode NTT calldata using u64 fast path.
+/// Layout: n(32) | q(32) | psi(32) | coeffs(n × cb)
 /// Returns `Ok(None)` if q >= 2^63 (fall back to BigUint).
 fn try_decode_ntt_fast(
     input: &[u8],
 ) -> Result<Option<(FastNttParams, Vec<u64>)>, PrecompileError> {
+    if input.len() < 3 * WORD {
+        return Err(PrecompileError::InputTooShort);
+    }
     let mut offset = 0;
-    let q_len = read_word_usize(input, &mut offset)?;
-    let psi_len = read_word_usize(input, &mut offset)?;
     let n = read_word_usize(input, &mut offset)?;
+    let q_big = read_word(input, &mut offset)?;
+    let psi_big = read_word(input, &mut offset)?;
 
     // Fast path: q and psi must fit in u64
-    if q_len > 8 || psi_len > 8 {
+    if q_big.bits() > 63 || psi_big.bits() > 63 {
         return Ok(None);
     }
-
-    if offset + q_len > input.len() {
-        return Err(PrecompileError::InputTooShort);
-    }
-    let q = bytes_to_u64(&input[offset..offset + q_len]);
-    offset += q_len;
-
-    if q >= (1u64 << 63) {
+    let q = q_big.iter_u64_digits().next().unwrap_or(0);
+    let psi = psi_big.iter_u64_digits().next().unwrap_or(0);
+    if q == 0 {
         return Ok(None);
     }
-
-    if offset + psi_len > input.len() {
-        return Err(PrecompileError::InputTooShort);
-    }
-    let psi = bytes_to_u64(&input[offset..offset + psi_len]);
-    offset += psi_len;
 
     let fast = FastNttParams::new(q, n, psi).map_err(PrecompileError::InvalidParams)?;
     let cb = fast.coeff_bytes;
 
     let total = n.checked_mul(cb).ok_or(PrecompileError::Overflow("n * coeff_bytes overflow"))?;
-    if total > input.len() || offset > input.len() - total {
-        return Err(PrecompileError::InputTooShort);
-    }
     if offset + total != input.len() {
         return Err(PrecompileError::BadLength);
     }
@@ -171,24 +161,22 @@ fn try_decode_ntt_fast(
 }
 
 /// Try to decode vec-op calldata using u64 fast path.
+/// Layout: n(32) | q(32) | a(n × cb) | b(n × cb)
 fn try_decode_vec_fast(
     input: &[u8],
 ) -> Result<Option<(u64, usize, Vec<u64>, Vec<u64>)>, PrecompileError> {
-    let mut offset = 0;
-    let q_len = read_word_usize(input, &mut offset)?;
-    let n = read_word_usize(input, &mut offset)?;
-
-    if q_len > 8 {
-        return Ok(None);
-    }
-
-    if q_len > input.len() || offset > input.len() - q_len {
+    if input.len() < 2 * WORD {
         return Err(PrecompileError::InputTooShort);
     }
-    let q = bytes_to_u64(&input[offset..offset + q_len]);
-    offset += q_len;
+    let mut offset = 0;
+    let n = read_word_usize(input, &mut offset)?;
+    let q_big = read_word(input, &mut offset)?;
 
-    if q >= (1u64 << 63) || q == 0 {
+    if q_big.bits() > 63 {
+        return Ok(None);
+    }
+    let q = q_big.iter_u64_digits().next().unwrap_or(0);
+    if q == 0 {
         return Ok(None);
     }
 
@@ -197,9 +185,6 @@ fn try_decode_vec_fast(
     let expected = n.checked_mul(cb).and_then(|v| v.checked_mul(2))
         .ok_or(PrecompileError::Overflow("n * coeff_bytes overflow"))?;
 
-    if expected > input.len() || offset > input.len() - expected {
-        return Err(PrecompileError::InputTooShort);
-    }
     if offset + expected != input.len() {
         return Err(PrecompileError::BadLength);
     }
@@ -220,15 +205,12 @@ fn try_decode_vec_fast(
 
 /// Decode calldata for NTT_FW / NTT_INV.
 ///
-/// Layout: `q_len(32) | psi_len(32) | n(32) | q(q_len) | psi(psi_len) | coeffs(n * coeff_bytes)`
+/// Layout: `n(32) | q(32) | psi(32) | coeffs(n × cb)`
 fn decode_ntt_input(input: &[u8]) -> Result<(FieldParams, Vec<BigUint>), PrecompileError> {
     let mut offset = 0;
-    let q_len = read_word_usize(input, &mut offset)?;
-    let psi_len = read_word_usize(input, &mut offset)?;
     let n = read_word_usize(input, &mut offset)?;
-
-    let q = read_biguint(input, &mut offset, q_len)?;
-    let psi = read_biguint(input, &mut offset, psi_len)?;
+    let q = read_word(input, &mut offset)?;
+    let psi = read_word(input, &mut offset)?;
 
     let params = FieldParams::new(q, n, psi).map_err(PrecompileError::InvalidParams)?;
     let coeff_bytes = params.coeff_byte_len();
@@ -243,15 +225,13 @@ fn decode_ntt_input(input: &[u8]) -> Result<(FieldParams, Vec<BigUint>), Precomp
 
 /// Decode calldata for NTT_VECMULMOD / NTT_VECADDMOD.
 ///
-/// Layout: `q_len(32) | n(32) | q(q_len) | a(n * cb) | b(n * cb)`
+/// Layout: `n(32) | q(32) | a(n × cb) | b(n × cb)`
 fn decode_vec_input(
     input: &[u8],
 ) -> Result<(BigUint, usize, Vec<BigUint>, Vec<BigUint>), PrecompileError> {
     let mut offset = 0;
-    let q_len = read_word_usize(input, &mut offset)?;
     let n = read_word_usize(input, &mut offset)?;
-
-    let q = read_biguint(input, &mut offset, q_len)?;
+    let q = read_word(input, &mut offset)?;
     if q.is_zero() {
         return Err(PrecompileError::InvalidParams("q must be nonzero"));
     }
@@ -326,30 +306,26 @@ pub fn ntt_vecaddmod_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError
 // ─── Calldata encoders (for building inputs from Rust) ───
 
 /// Encode calldata for NTT_FW / NTT_INV.
+/// Layout: n(32) | q(32) | psi(32) | coeffs(n × cb)
 pub fn encode_ntt_input(params: &FieldParams, a: &[BigUint]) -> Vec<u8> {
-    let q_bytes = params.q.to_bytes_be();
-    let psi_bytes = params.psi.to_bytes_be();
     let coeff_bytes = params.coeff_byte_len();
 
     let mut out = Vec::new();
-    out.extend_from_slice(&encode_word(q_bytes.len())); // q_len  (32 bytes)
-    out.extend_from_slice(&encode_word(psi_bytes.len())); // psi_len (32 bytes)
-    out.extend_from_slice(&encode_word(params.n)); // n       (32 bytes)
-    out.extend_from_slice(&q_bytes); // q       (q_len bytes)
-    out.extend_from_slice(&psi_bytes); // psi     (psi_len bytes)
-    out.extend_from_slice(&encode_vector(a, coeff_bytes)); // coefficients
+    out.extend_from_slice(&encode_word(params.n));
+    out.extend_from_slice(&encode_biguint(&params.q, WORD));
+    out.extend_from_slice(&encode_biguint(&params.psi, WORD));
+    out.extend_from_slice(&encode_vector(a, coeff_bytes));
     out
 }
 
 /// Encode calldata for NTT_VECMULMOD / NTT_VECADDMOD.
+/// Layout: n(32) | q(32) | a(n × cb) | b(n × cb)
 pub fn encode_vec_input(q: &BigUint, n: usize, a: &[BigUint], b: &[BigUint]) -> Vec<u8> {
-    let q_bytes = q.to_bytes_be();
     let coeff_bytes = (q.bits() as usize + 7) / 8;
 
     let mut out = Vec::new();
-    out.extend_from_slice(&encode_word(q_bytes.len())); // q_len (32 bytes)
-    out.extend_from_slice(&encode_word(n)); // n     (32 bytes)
-    out.extend_from_slice(&q_bytes); // q     (q_len bytes)
+    out.extend_from_slice(&encode_word(n));
+    out.extend_from_slice(&encode_biguint(q, WORD));
     out.extend_from_slice(&encode_vector(a, coeff_bytes));
     out.extend_from_slice(&encode_vector(b, coeff_bytes));
     out
@@ -522,7 +498,8 @@ mod tests {
 
     #[test]
     fn test_calldata_is_all_big_endian() {
-        let params = small_params();
+        // New layout: n(32) | q(32) | psi(32) | coeffs(n × cb)
+        let params = small_params(); // q=17, n=4, psi=9
         let a: Vec<BigUint> = vec![1u64, 2, 3, 4]
             .into_iter()
             .map(BigUint::from)
@@ -530,17 +507,18 @@ mod tests {
 
         let input = encode_ntt_input(&params, &a);
 
-        assert_eq!(input[31], 1);
+        // n = 4 at word 0
+        assert_eq!(input[31], 4);
         assert_eq!(&input[..31], &[0u8; 31]);
 
-        assert_eq!(input[63], 1);
+        // q = 17 at word 1
+        assert_eq!(input[63], 17);
 
-        assert_eq!(input[95], 4);
+        // psi = 9 at word 2
+        assert_eq!(input[95], 9);
 
-        assert_eq!(input[96], 17);
-
-        assert_eq!(input[97], 9);
-
-        assert_eq!(&input[98..102], &[1, 2, 3, 4]);
+        // coefficients start at byte 96, cb=1 for q=17
+        assert_eq!(&input[96..100], &[1, 2, 3, 4]);
+        assert_eq!(input.len(), 100); // 96 header + 4 coefficients
     }
 }
