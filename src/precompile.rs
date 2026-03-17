@@ -303,6 +303,109 @@ pub fn ntt_vecaddmod_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError
     Ok(encode_vector(&result, coeff_bytes))
 }
 
+/// Execute `POLYMUL_Z` precompile.
+///
+/// Exact integer polynomial multiplication in Z[x]/(x^n + 1).
+/// Uses double-CRT with two NTT-friendly primes to recover exact integer results.
+///
+/// Input: `n(32) | cb(32) | a(n × cb) | b(n × cb)`
+///   n: polynomial dimension (power of 2, ≤ 1024)
+///   cb: bytes per coefficient for input (signed, two's complement for negatives)
+///   a, b: input polynomials with signed integer coefficients
+///
+/// Output: `n × 8` bytes — signed 64-bit LE coefficients of a·b mod (x^n + 1).
+///
+/// The product coefficients must fit in i64. For Hawk-512 with 12-bit inputs
+/// and n=512, products reach ~33 bits — well within i64.
+pub fn polymul_z_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
+    if input.len() < 2 * WORD {
+        return Err(PrecompileError::InputTooShort);
+    }
+    let mut offset = 0;
+    let n = read_word_usize(input, &mut offset)?;
+    let cb = read_word_usize(input, &mut offset)?;
+
+    if !n.is_power_of_two() || n == 0 || n > 1024 || cb == 0 || cb > 8 {
+        return Err(PrecompileError::InvalidParams("invalid polymul_z params"));
+    }
+
+    let total = n.checked_mul(cb).and_then(|nc| nc.checked_mul(2))
+        .ok_or(PrecompileError::Overflow("n*cb*2 overflow"))?;
+    if offset + total != input.len() {
+        return Err(PrecompileError::BadLength);
+    }
+
+    // Decode signed coefficients
+    fn decode_signed(data: &[u8], offset: &mut usize, cb: usize, n: usize) -> Vec<i64> {
+        let mut poly = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut val: i64 = 0;
+            for j in 0..cb {
+                val |= (data[*offset + j] as i64) << (8 * j);
+            }
+            // Sign extend if high bit set
+            if cb < 8 && (val >> (cb * 8 - 1)) & 1 == 1 {
+                val |= !0i64 << (cb * 8);
+            }
+            poly.push(val);
+            *offset += cb;
+        }
+        poly
+    }
+
+    let a = decode_signed(input, &mut offset, cb, n);
+    let b = decode_signed(input, &mut offset, cb, n);
+
+    // CRT primes and their psi values
+    const Q1: u64 = 2013265921;
+    const Q2: u64 = 2113929217;
+
+    fn find_psi(q: u64, n: usize) -> u64 {
+        let mut g: u64 = 3;
+        while fast::pow_mod_64(g, (q - 1) / 2, q) == 1 { g += 1; }
+        fast::pow_mod_64(g, (q - 1) / (2 * n as u64), q)
+    }
+
+    let psi1 = find_psi(Q1, n);
+    let psi2 = find_psi(Q2, n);
+    let params1 = FastNttParams::new(Q1, n, psi1).map_err(PrecompileError::InvalidParams)?;
+    let params2 = FastNttParams::new(Q2, n, psi2).map_err(PrecompileError::InvalidParams)?;
+
+    // Reduce inputs mod q (handle negative values)
+    let a1: Vec<u64> = a.iter().map(|&x| ((x % Q1 as i64 + Q1 as i64) % Q1 as i64) as u64).collect();
+    let b1: Vec<u64> = b.iter().map(|&x| ((x % Q1 as i64 + Q1 as i64) % Q1 as i64) as u64).collect();
+    let a2: Vec<u64> = a.iter().map(|&x| ((x % Q2 as i64 + Q2 as i64) % Q2 as i64) as u64).collect();
+    let b2: Vec<u64> = b.iter().map(|&x| ((x % Q2 as i64 + Q2 as i64) % Q2 as i64) as u64).collect();
+
+    // NTT multiply mod q1
+    let na1 = fast::ntt_fw_fast(&a1, &params1);
+    let nb1 = fast::ntt_fw_fast(&b1, &params1);
+    let prod1 = fast::vec_mul_mod_fast(&na1, &nb1, Q1);
+    let r1 = fast::ntt_inv_fast(&prod1, &params1);
+
+    // NTT multiply mod q2
+    let na2 = fast::ntt_fw_fast(&a2, &params2);
+    let nb2 = fast::ntt_fw_fast(&b2, &params2);
+    let prod2 = fast::vec_mul_mod_fast(&na2, &nb2, Q2);
+    let r2 = fast::ntt_inv_fast(&prod2, &params2);
+
+    // CRT reconstruction: result = r1 + q1 * ((r2 - r1) * q1_inv_mod_q2 % q2)
+    let q1_inv = fast::pow_mod_64(Q1, Q2 - 2, Q2);
+    let q1q2 = Q1 as i128 * Q2 as i128;
+    let half = q1q2 / 2;
+
+    let mut out = Vec::with_capacity(n * 8);
+    for i in 0..n {
+        let diff = (r2[i] as i64 - r1[i] as i64).rem_euclid(Q2 as i64) as u64;
+        let t = ((diff as u128 * q1_inv as u128) % Q2 as u128) as u64;
+        let result = r1[i] as i128 + Q1 as i128 * t as i128;
+        // Center: map to [-q1*q2/2, q1*q2/2)
+        let centered = if result > half { result - q1q2 } else { result };
+        out.extend_from_slice(&(centered as i64).to_le_bytes());
+    }
+    Ok(out)
+}
+
 /// Execute `NTT_VECSUBMOD` precompile.
 /// Same format as VECADDMOD but computes `result[i] = (a[i] - b[i]) mod q`.
 pub fn ntt_vecsubmod_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {

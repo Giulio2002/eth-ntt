@@ -11,5 +11,5 @@ pub use ntt::{ntt_fw, ntt_inv, vec_add_mod, vec_mul_mod};
 pub use precompile::{
     decode_output, encode_ntt_input, encode_vec_input, ntt_fw_precompile, ntt_inv_precompile,
     expand_a_vecmul_precompile, ntt_vecaddmod_precompile, ntt_vecmulmod_precompile,
-    ntt_vecsubmod_precompile, shake_n, shake_precompile, PrecompileError,
+    ntt_vecsubmod_precompile, polymul_z_precompile, shake_n, shake_precompile, PrecompileError,
 };

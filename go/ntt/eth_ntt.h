@@ -70,6 +70,13 @@ void eth_ntt_vec_add_mod(
     const uint64_t *a, const uint64_t *b,
     uint64_t *output, size_t n, uint64_t q);
 
+/* Integer polynomial multiplication in Z[x]/(x^n+1) via double-CRT NTT.
+ * Input: n(32 BE) | cb(32 BE) | a(n*cb) | b(n*cb)
+ * Output: n*8 bytes (signed i64 little-endian coefficients) */
+int32_t eth_ntt_polymul_z(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
 /* Element-wise modular subtraction: result[i] = (a[i] - b[i]) mod q.
  * Same input format as VECMULMOD/VECADDMOD. */
 int32_t eth_ntt_vecsubmod_precompile(

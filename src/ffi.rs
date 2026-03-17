@@ -92,6 +92,21 @@ pub unsafe extern "C" fn eth_ntt_vecaddmod_precompile(
     }
 }
 
+/// Integer polynomial multiplication in Z[x]/(x^n+1) via double-CRT NTT.
+/// Input: n(32) | cb(32) | a(n*cb) | b(n*cb)
+/// Output: n*8 bytes (signed i64 LE coefficients)
+#[no_mangle]
+pub unsafe extern "C" fn eth_ntt_polymul_z(
+    input: *const u8, input_len: usize,
+    output_out: *mut *mut u8, output_len_out: *mut usize,
+) -> i32 {
+    let input = slice::from_raw_parts(input, input_len);
+    match crate::polymul_z_precompile(input) {
+        Ok(output) => { write_output(output, output_out, output_len_out); 0 }
+        Err(e) => error_code(e),
+    }
+}
+
 /// Element-wise (a[i] - b[i]) mod q. Same format as VECADDMOD.
 #[no_mangle]
 pub unsafe extern "C" fn eth_ntt_vecsubmod_precompile(

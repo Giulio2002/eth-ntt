@@ -342,7 +342,7 @@ fn sub_mod_64(a: u64, b: u64, q: u64) -> u64 {
     if a >= b { a - b } else { q + a - b }
 }
 
-fn pow_mod_64(mut base: u64, mut exp: u64, q: u64) -> u64 {
+pub fn pow_mod_64(mut base: u64, mut exp: u64, q: u64) -> u64 {
     if q == 1 { return 0; }
     let mut result = 1u64;
     base %= q;

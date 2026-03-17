@@ -176,6 +176,19 @@ func u64ptr(s []uint64) *C.uint64_t {
 	return (*C.uint64_t)(unsafe.Pointer(&s[0]))
 }
 
+// PolymulZPrecompile executes integer polynomial multiplication in Z[x]/(x^n+1).
+// Input: n(32) | cb(32) | a(n*cb) | b(n*cb)
+// Output: n*8 bytes (signed i64 LE coefficients)
+func PolymulZPrecompile(input []byte) ([]byte, error) {
+	if len(input) < 64 {
+		return nil, ErrInputTooShort
+	}
+	var outPtr *C.uint8_t
+	var outLen C.size_t
+	rc := C.eth_ntt_polymul_z((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	return collectOutput(rc, outPtr, outLen)
+}
+
 // VecSubModPrecompile executes element-wise modular subtraction.
 func VecSubModPrecompile(input []byte) ([]byte, error) {
 	if len(input) == 0 {
