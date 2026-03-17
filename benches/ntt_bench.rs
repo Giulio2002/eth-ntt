@@ -456,54 +456,29 @@ criterion_group!(
 );
 
 fn bench_shake_precompile(c: &mut Criterion) {
-    let mut group = c.benchmark_group("shake_precompile");
+    let mut group = c.benchmark_group("shake256_precompile");
 
-    // SHAKE-128 with 32 bytes input, 168 bytes output (one rate block)
-    let mut input128 = Vec::new();
-    input128.extend_from_slice(&128u64.to_be_bytes());
-    input128.extend_from_slice(&[0u8; 24]);
-    input128.extend_from_slice(&168u64.to_be_bytes());
-    input128.extend_from_slice(&[0u8; 24]);
-    input128.extend_from_slice(&[0x42u8; 32]);
-    let input128 = {
-        let mut v = vec![0u8; 32]; // N = 128
-        v[31] = 128;
-        let mut o = vec![0u8; 32]; // output_len = 168
-        o[31] = 168;
-        v.extend_from_slice(&o);
+    // SHAKE256: format is output_len(32) | data
+    // 32 bytes input, 32 bytes output
+    let input_32 = {
+        let mut v = vec![0u8; 32];
+        v[31] = 32; // output_len = 32
         v.extend_from_slice(&[0x42u8; 32]);
         v
     };
-    group.bench_function("shake128/32B_in_168B_out", |b| {
-        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input128)))
+    group.bench_function("32B_in_32B_out", |b| {
+        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input_32)))
     });
 
-    // SHAKE-256 with 32 bytes input, 32 bytes output
-    let input256_32 = {
+    // 832 bytes input (Dilithium challenge hash size), 32 bytes output
+    let input_big = {
         let mut v = vec![0u8; 32];
-        v[30] = 1; // N = 256
-        let mut o = vec![0u8; 32];
-        o[31] = 32; // output_len = 32
-        v.extend_from_slice(&o);
-        v.extend_from_slice(&[0x42u8; 32]);
+        v[31] = 32;
+        v.extend_from_slice(&[0x42u8; 832]);
         v
     };
-    group.bench_function("shake256/32B_in_32B_out", |b| {
-        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input256_32)))
-    });
-
-    // SHAKE-256 with 64+768=832 bytes input (Dilithium challenge hash size), 32 bytes output
-    let input256_big = {
-        let mut v = vec![0u8; 32];
-        v[30] = 1; // N = 256
-        let mut o = vec![0u8; 32];
-        o[31] = 32; // output_len = 32
-        v.extend_from_slice(&o);
-        v.extend_from_slice(&[0x42u8; 832]); // mu(64) + w1(768)
-        v
-    };
-    group.bench_function("shake256/832B_in_32B_out", |b| {
-        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input256_big)))
+    group.bench_function("832B_in_32B_out", |b| {
+        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input_big)))
     });
 
     group.finish();

@@ -467,31 +467,27 @@ pub fn shake_n(n: usize, data: &[u8], output: &mut [u8]) {
     }
 }
 
-/// Execute `SHAKE` precompile (generic SHAKE-N).
+/// Execute `SHAKE256` precompile.
 ///
-/// Input: `N(32 BE) | output_len(32 BE) | data(var)`
+/// Input: `output_len(32 BE) | data(var)`
 ///
-/// N must be in [1, 256]. Returns `output_len` bytes of SHAKE-N output.
+/// Returns `output_len` bytes of SHAKE256(data).
 pub fn shake_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
-    if input.len() < 2 * WORD {
+    if input.len() < WORD {
         return Err(PrecompileError::InputTooShort);
     }
     const MAX_OUTPUT: usize = 1 << 20; // 1 MB
 
     let mut offset = 0;
-    let n = read_word_usize_raw(input, &mut offset)?;
     let output_len = read_word_usize_raw(input, &mut offset)?;
 
-    if n == 0 || n > 256 {
-        return Err(PrecompileError::InvalidParams("N must be in [1, 256]"));
-    }
     if output_len > MAX_OUTPUT {
         return Err(PrecompileError::Overflow("output_len exceeds 1 MB"));
     }
 
     let data = &input[offset..];
     let mut output = vec![0u8; output_len];
-    shake_n(n, data, &mut output);
+    shake_n(256, data, &mut output);
     Ok(output)
 }
 
@@ -715,9 +711,9 @@ mod tests {
     }
 
     #[test]
-    fn test_shake_precompile_256() {
+    fn test_shake256_precompile() {
+        // Format: output_len(32) | data
         let mut input = Vec::new();
-        input.extend_from_slice(&encode_word(256)); // security
         input.extend_from_slice(&encode_word(64));  // output_len
         input.extend_from_slice(b"test data");
         let output = shake_precompile(&input).unwrap();
@@ -726,41 +722,22 @@ mod tests {
         // Deterministic
         let output2 = shake_precompile(&input).unwrap();
         assert_eq!(output, output2);
+
+        // Matches sha3 crate
+        use sha3::digest::{ExtendableOutput, Update, XofReader};
+        let mut expected = [0u8; 64];
+        let mut h = sha3::Shake256::default();
+        h.update(b"test data");
+        h.finalize_xof().read(&mut expected);
+        assert_eq!(output, expected);
     }
 
     #[test]
-    fn test_shake_precompile_128() {
+    fn test_shake256_precompile_empty() {
         let mut input = Vec::new();
-        input.extend_from_slice(&encode_word(128)); // security
-        input.extend_from_slice(&encode_word(32));  // output_len
-        input.extend_from_slice(b"test data");
+        input.extend_from_slice(&encode_word(0)); // output_len = 0
         let output = shake_precompile(&input).unwrap();
-        assert_eq!(output.len(), 32);
-
-        // SHAKE128 and SHAKE256 produce different output
-        let mut input256 = Vec::new();
-        input256.extend_from_slice(&encode_word(256));
-        input256.extend_from_slice(&encode_word(32));
-        input256.extend_from_slice(b"test data");
-        let output256 = shake_precompile(&input256).unwrap();
-        assert_ne!(output, output256);
-    }
-
-    #[test]
-    fn test_shake_precompile_invalid_n() {
-        // N=0 is invalid
-        let mut input = Vec::new();
-        input.extend_from_slice(&encode_word(0));
-        input.extend_from_slice(&encode_word(32));
-        input.extend_from_slice(b"test");
-        assert!(shake_precompile(&input).is_err());
-
-        // N=257 is invalid
-        let mut input = Vec::new();
-        input.extend_from_slice(&encode_word(257));
-        input.extend_from_slice(&encode_word(32));
-        input.extend_from_slice(b"test");
-        assert!(shake_precompile(&input).is_err());
+        assert_eq!(output.len(), 0);
     }
 
     #[test]
