@@ -1,6 +1,5 @@
-contract,total_gas,calldata_bytes,calldata_gas,base_tx,evm_execution,evm_staticcall,evm_memory,evm_arithmetic,evm_stack,evm_control,evm_other
-FalconVerifierDirectVerify,97380,2106,30552,21000,45828,3200,411,3,24,12,0
-FalconVerifierNTTWithLpNorm,97380,2106,30552,21000,45828,16543,1129,27,237,60,0
-FalconVerifierNTT,222846,2106,30552,21000,171294,15621,9772,49137,70728,26036,0
-DilithiumVerifierNTT,864290,21365,337316,21000,505974,0,0,0,0,0,0
-DilithiumVerifierDirectVerify,170580,3762,59832,21000,89748,5100,742,3,24,12,0
+contract,total_gas,calldata_bytes,calldata_gas,base_tx,evm_execution
+FalconVerifierNTTBound,59275,1082,14660,21000,23615
+FalconVerifierDirectBound,58462,1082,14660,21000,22802
+DilithiumVerifierNTTBound,171448,3925,59176,21000,91272
+DilithiumVerifierDirectBound,119262,2443,38884,21000,59378

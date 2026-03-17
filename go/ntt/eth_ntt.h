@@ -76,10 +76,11 @@ int32_t eth_ntt_vecsubmod_precompile(
     const uint8_t *input, size_t input_len,
     uint8_t **output_out, size_t *output_len_out);
 
-/* Matrix-vector product in NTT domain.
- * Input: n(32 BE) | q(32 BE) | k(32 BE) | l(32 BE) | A(k*l*n*cb) | z(l*n*cb)
+/* ExpandA + matrix-vector multiply (ML-DSA / ML-KEM).
+ * Expands A from rho via SHAKE128, then computes A × z in NTT domain.
+ * Input: q(32 BE) | n(32 BE) | k(32 BE) | l(32 BE) | rho(32) | z(l*n*cb)
  * Output: k*n*cb bytes — result[i] = sum_j(A[i][j] * z[j]) mod q */
-int32_t eth_ntt_matvecmul_precompile(
+int32_t eth_ntt_expand_a_vecmul_precompile(
     const uint8_t *input, size_t input_len,
     uint8_t **output_out, size_t *output_len_out);
 

@@ -1,3 +1,4 @@
 /target
 *.log
 erigon/
+kurtosis/scripts/__pycache__/

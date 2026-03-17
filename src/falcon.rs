@@ -105,57 +105,125 @@ pub fn falcon_norm(s1_compact: &[u8], s2_compact: &[u8], hashed_compact: &[u8]) 
 
 /// Falcon-512 norm check on raw coefficient arrays.
 pub fn falcon_norm_coeffs(s1: &[u64], s2: &[u64], hashed: &[u64]) -> bool {
-    lp_norm_coeffs(Q, SIG_BOUND as u128, s1, s2, hashed)
+    lp_norm_coeffs(Q, SIG_BOUND as u128, 2, s1, s2, hashed)
 }
 
-/// Generalized centered L2 norm check for any lattice-based signature.
+/// Generalized centered Lp norm check for any lattice-based signature.
 ///
-/// Computes: ||(hashed - s1) mod q||² + ||s2||² < bound
-/// where centering maps x to min(x, q-x).
+/// Computes the centered Lp norm of (hashed - s1) mod q and s2,
+/// then checks if the combined norm is below `bound`.
 ///
-/// Works for Falcon-512 (q=12289, bound=34034726), Falcon-1024, Dilithium, etc.
-pub fn lp_norm_coeffs(q: u64, bound: u128, s1: &[u64], s2: &[u64], hashed: &[u64]) -> bool {
+/// p=u64::MAX: L∞ (infinity norm) — max|centered(x)| < bound
+/// p=1:        L1 (Manhattan)     — Σ|centered(x)| < bound
+/// p=2:        L2 (Euclidean)     — Σ centered(x)² < bound (squared, no sqrt)
+///
+/// For L2, caller passes bound² (squared bound) to avoid the square root.
+/// Centering maps x to min(x, q-x).
+pub fn lp_norm_coeffs(q: u64, bound: u128, p: u64, s1: &[u64], s2: &[u64], hashed: &[u64]) -> bool {
     let n = s1.len();
     if s2.len() != n || hashed.len() != n {
         return false;
     }
-    let qs1 = q / 2;
-    let mut norm: u128 = 0;
-    for i in 0..n {
-        let mut d = (hashed[i] + q - s1[i]) % q;
-        if d > qs1 { d = q - d; }
-        norm += (d as u128) * (d as u128);
+    let half_q = q / 2;
 
-        let mut s = s2[i];
-        if s > qs1 { s = q - s; }
-        norm += (s as u128) * (s as u128);
+    match p {
+        u64::MAX => {
+            // L∞: max of all centered values < bound
+            for i in 0..n {
+                let mut d = (hashed[i] + q - s1[i]) % q;
+                if d > half_q { d = q - d; }
+                if d as u128 >= bound { return false; }
+
+                let mut s = s2[i];
+                if s > half_q { s = q - s; }
+                if s as u128 >= bound { return false; }
+            }
+            true
+        }
+        1 => {
+            // L1: sum of absolute centered values < bound
+            let mut norm: u128 = 0;
+            for i in 0..n {
+                let mut d = (hashed[i] + q - s1[i]) % q;
+                if d > half_q { d = q - d; }
+                norm += d as u128;
+
+                let mut s = s2[i];
+                if s > half_q { s = q - s; }
+                norm += s as u128;
+            }
+            norm < bound
+        }
+        2 => {
+            // L2 squared: sum of squared centered values < bound
+            let mut norm: u128 = 0;
+            for i in 0..n {
+                let mut d = (hashed[i] + q - s1[i]) % q;
+                if d > half_q { d = q - d; }
+                norm += (d as u128) * (d as u128);
+
+                let mut s = s2[i];
+                if s > half_q { s = q - s; }
+                norm += (s as u128) * (s as u128);
+            }
+            norm < bound
+        }
+        _ => false,
     }
-    norm < bound
 }
 
-/// Generalized LpNorm precompile.
-/// Input: q(32 BE) | n(32 BE) | bound(32 BE) | cb(32 BE) | s1(n×cb) | s2(n×cb) | hashed(n×cb)
+/// Generalized Lp norm precompile.
+///
+/// Input: `q(32) | n(32) | bound(32) | cb(32) | p(32) | count(32) | vec[0](n×cb) | ... | vec[count-1](n×cb)`
+///
+/// Computes the centered Lp norm over ALL n×count coefficients.
+/// p=1: L1, p=2: L2 (squared), p=u64::MAX: L∞.
+///
 /// Output: 32 bytes (0x00..01 if norm < bound, 0x00..00 otherwise)
 pub fn lp_norm_precompile(input: &[u8]) -> Option<Vec<u8>> {
-    if input.len() < 128 { return None; }
+    if input.len() < 192 { return None; } // 6 × 32-byte words
 
-    // Parse header (4 × 32-byte big-endian words)
     let q = read_u64_be(&input[0..32])?;
     let n = read_u64_be(&input[32..64])? as usize;
     let bound = read_u128_be(&input[64..96]);
     let cb = read_u64_be(&input[96..128])? as usize;
+    let p = read_u64_be(&input[128..160])?;
+    let count = read_u64_be(&input[160..192])? as usize;
 
-    if q == 0 || n == 0 || cb == 0 || cb > 8 { return None; }
+    if q == 0 || n == 0 || cb == 0 || cb > 8 || count == 0 { return None; }
+    if p != 1 && p != 2 && p != u64::MAX { return None; }
 
     let vec_size = n.checked_mul(cb)?;
-    let expected = 128 + 3 * vec_size;
-    if input.len() != expected { return None; }
+    let total = count.checked_mul(vec_size)?;
+    if input.len() != 192 + total { return None; }
 
-    let s1 = read_coeffs(&input[128..128 + vec_size], n, cb);
-    let s2 = read_coeffs(&input[128 + vec_size..128 + 2 * vec_size], n, cb);
-    let hashed = read_coeffs(&input[128 + 2 * vec_size..], n, cb);
+    let coeffs = read_coeffs(&input[192..], n * count, cb);
+    let half_q = q / 2;
 
-    let valid = lp_norm_coeffs(q, bound, &s1, &s2, &hashed);
+    let valid = match p {
+        u64::MAX => {
+            coeffs.iter().all(|&x| {
+                let c = if x > half_q { q - x } else { x };
+                (c as u128) < bound
+            })
+        }
+        1 => {
+            let norm: u128 = coeffs.iter().map(|&x| {
+                let c = if x > half_q { q - x } else { x };
+                c as u128
+            }).sum();
+            norm < bound
+        }
+        2 => {
+            let norm: u128 = coeffs.iter().map(|&x| {
+                let c = if x > half_q { q - x } else { x };
+                (c as u128) * (c as u128)
+            }).sum();
+            norm < bound
+        }
+        _ => false,
+    };
+
     let mut result = vec![0u8; 32];
     if valid { result[31] = 1; }
     Some(result)
@@ -535,7 +603,7 @@ mod tests {
         let s1: Vec<u64> = (0..512).map(|i| i % Q).collect();
         let hashed = s1.clone();
         let s2 = vec![0u64; 512];
-        assert!(lp_norm_coeffs(Q, SIG_BOUND as u128, &s1, &s2, &hashed));
+        assert!(lp_norm_coeffs(Q, SIG_BOUND as u128, 2, &s1, &s2, &hashed));
     }
 
     #[test]
@@ -543,12 +611,19 @@ mod tests {
         // Dilithium: q=8380417, n=256
         let q = 8380417u64;
         let n = 256;
-        let bound = 1u128 << 40; // arbitrary large bound for test
+        let bound = 1u128 << 40;
         let s1 = vec![0u64; n];
-        let s2 = vec![1u64; n]; // small s2
+        let s2 = vec![1u64; n];
         let hashed = vec![0u64; n];
-        // norm = 256 * 1² = 256, well under bound
-        assert!(lp_norm_coeffs(q, bound, &s1, &s2, &hashed));
+        // L2: norm = 256 * 1² = 256, well under bound
+        assert!(lp_norm_coeffs(q, bound, 2, &s1, &s2, &hashed));
+        // L1: norm = 256 * 1 = 256
+        assert!(lp_norm_coeffs(q, bound, 1, &s1, &s2, &hashed));
+        // L∞: max = 1
+        assert!(lp_norm_coeffs(q, 2, u64::MAX, &s1, &s2, &hashed));
+        assert!(!lp_norm_coeffs(q, 1, u64::MAX, &s1, &s2, &hashed)); // bound=1, max=1, not < 1
+        // Invalid p
+        assert!(!lp_norm_coeffs(q, bound, 3, &s1, &s2, &hashed));
     }
 
     #[test]
@@ -623,22 +698,54 @@ mod tests {
         // cb (32 bytes BE)
         input.extend_from_slice(&[0u8; 24]);
         input.extend_from_slice(&cb.to_be_bytes());
+        // p = 2 (L2 squared) (32 bytes BE)
+        input.extend_from_slice(&[0u8; 24]);
+        input.extend_from_slice(&2u64.to_be_bytes());
+        // count = 2 (32 bytes BE) — diff and s2
+        input.extend_from_slice(&[0u8; 24]);
+        input.extend_from_slice(&2u64.to_be_bytes());
 
-        // s1 = hashed, s2 = 0 → norm = 0, should be valid
-        let hashed: Vec<u64> = (0..N as u64).map(|i| i % Q).collect();
-        for &c in &hashed {
-            input.extend_from_slice(&(c as u16).to_be_bytes());
-        }
-        // s2 = all zeros
+        // diff = (hashed - s1) mod q = 0 (since s1 == hashed), s2 = 0 → norm = 0
+        // vec[0] = diff = all zeros
         for _ in 0..N {
             input.extend_from_slice(&[0u8; 2]);
         }
-        // hashed
-        for &c in &hashed {
-            input.extend_from_slice(&(c as u16).to_be_bytes());
+        // vec[1] = s2 = all zeros
+        for _ in 0..N {
+            input.extend_from_slice(&[0u8; 2]);
         }
 
         let result = lp_norm_precompile(&input).unwrap();
-        assert_eq!(result[31], 1, "expected valid norm");
+        assert_eq!(result[31], 1, "expected valid L2 norm");
+    }
+
+    #[test]
+    fn test_lp_norm_precompile_linf() {
+        // Test L∞ norm for Dilithium z-check
+        let q: u64 = 8380417;
+        let n: u64 = 256;
+        let bound: u128 = 130994; // gamma1 - beta
+        let cb: u64 = 3;
+
+        let mut input = Vec::new();
+        input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&q.to_be_bytes());
+        input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&n.to_be_bytes());
+        input.extend_from_slice(&[0u8; 16]); input.extend_from_slice(&bound.to_be_bytes());
+        input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&cb.to_be_bytes());
+        input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&u64::MAX.to_be_bytes()); // p = L∞
+        input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&4u64.to_be_bytes()); // count = 4
+
+        // 4 × 256 coefficients, all small (< bound)
+        for _ in 0..4 {
+            for i in 0..256u32 {
+                let v = i % 100; // well under 130994
+                input.push((v >> 16) as u8);
+                input.push((v >> 8) as u8);
+                input.push(v as u8);
+            }
+        }
+
+        let result = lp_norm_precompile(&input).unwrap();
+        assert_eq!(result[31], 1, "expected valid L∞ norm");
     }
 }

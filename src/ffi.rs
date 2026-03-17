@@ -105,16 +105,16 @@ pub unsafe extern "C" fn eth_ntt_vecsubmod_precompile(
     }
 }
 
-/// Matrix-vector product in NTT domain.
-/// Input: n(32) | q(32) | k(32) | l(32) | A(k*l*n*cb) | z(l*n*cb)
+/// ExpandA + matrix-vector multiply.
+/// Input: q(32) | n(32) | k(32) | l(32) | rho(32) | z(l*n*cb)
 /// Output: k*n*cb bytes
 #[no_mangle]
-pub unsafe extern "C" fn eth_ntt_matvecmul_precompile(
+pub unsafe extern "C" fn eth_ntt_expand_a_vecmul_precompile(
     input: *const u8, input_len: usize,
     output_out: *mut *mut u8, output_len_out: *mut usize,
 ) -> i32 {
     let input = slice::from_raw_parts(input, input_len);
-    match crate::matvecmul_precompile(input) {
+    match crate::expand_a_vecmul_precompile(input) {
         Ok(output) => { write_output(output, output_out, output_len_out); 0 }
         Err(e) => error_code(e),
     }

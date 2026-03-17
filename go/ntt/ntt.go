@@ -187,15 +187,15 @@ func VecSubModPrecompile(input []byte) ([]byte, error) {
 	return collectOutput(rc, outPtr, outLen)
 }
 
-// MatVecMulPrecompile executes matrix-vector product in NTT domain.
-// Input: n(32) | q(32) | k(32) | l(32) | A(k*l*n*cb) | z(l*n*cb)
-func MatVecMulPrecompile(input []byte) ([]byte, error) {
-	if len(input) < 128 {
+// ExpandAVecMulPrecompile expands A from rho via SHAKE128 and computes A × z.
+// Input: q(32) | n(32) | k(32) | l(32) | rho(32) | z(l*n*cb)
+func ExpandAVecMulPrecompile(input []byte) ([]byte, error) {
+	if len(input) < 160 {
 		return nil, ErrInputTooShort
 	}
 	var outPtr *C.uint8_t
 	var outLen C.size_t
-	rc := C.eth_ntt_matvecmul_precompile((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	rc := C.eth_ntt_expand_a_vecmul_precompile((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
 	return collectOutput(rc, outPtr, outLen)
 }
 

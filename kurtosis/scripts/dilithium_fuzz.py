@@ -231,13 +231,11 @@ def poly_to_2be(poly):
     """Encode polynomial as N * 2-byte big-endian values (for w1)."""
     return b''.join(c.to_bytes(2, 'big') for c in poly)
 
-def build_calldata(a_ntt, z, c_ntt, t1_d_ntt, w1_polys, c_tilde, pk_bytes, msg):
+def build_calldata(rho, z, c_ntt, t1_d_ntt, w1_polys, c_tilde, pk_bytes, msg):
     """Build DilithiumVerifierNTT calldata."""
     cd = bytearray()
-    # A_ntt: 4x4 matrix, row-major (12288 bytes)
-    for i in range(K):
-        for j in range(L):
-            cd += poly_to_3be(a_ntt[i][j])
+    # rho: 32 bytes (A derived internally via EXPAND_A_VECMUL precompile)
+    cd += rho
     # z: 4 polys (3072 bytes)
     for p in z:
         cd += poly_to_3be(p)
@@ -321,8 +319,8 @@ def verify_offchain(pk_bytes, sig_bytes, msg, rpc):
 
     valid = (c_tilde_check == c_tilde)
 
-    # Build calldata for on-chain verification
-    cd = build_calldata(a_ntt, z, c_ntt, t1_d_ntt, w1_polys, c_tilde, pk_bytes, msg)
+    # Build calldata for on-chain verification (rho instead of A_ntt)
+    cd = build_calldata(rho, z, c_ntt, t1_d_ntt, w1_polys, c_tilde, pk_bytes, msg)
     return valid, cd
 
 # ─── Deploy and fuzz ───

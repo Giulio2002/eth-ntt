@@ -322,50 +322,46 @@ pub fn ntt_vecsubmod_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError
     Ok(encode_vector(&result, coeff_bytes))
 }
 
-/// Execute `MATVECMUL` precompile.
+/// Execute `EXPAND_A_VECMUL` precompile.
 ///
-/// Input: `n(32) | q(32) | k(32) | l(32) | A(k×l×n×cb) | z(l×n×cb)`
-/// Output: `k×n×cb` bytes — result of A × z (matrix-vector product in NTT domain).
+/// Expands matrix A from seed `rho` via SHAKE128 (ExpandA from ML-DSA/ML-KEM),
+/// then computes the matrix-vector product A × z in the NTT domain.
 ///
-/// Computes: `result[i] = sum_j(A[i][j] * z[j])` element-wise mod q.
-pub fn matvecmul_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
-    if input.len() < 4 * WORD {
+/// Input: `q(32) | n(32) | k(32) | l(32) | rho(32) | z(l×n×cb)`
+/// Output: `k×n×cb` bytes — result[i] = sum_j(A[i][j] * z[j]) mod q.
+///
+/// ExpandA: for each (i,j), A[i][j] = RejNTTPoly(SHAKE128(rho || j || i)).
+/// Rejection sampling: read 3 bytes LE, mask to 23 bits, accept if < q.
+/// Works for ML-DSA (q=8380417) and ML-KEM (q=3329).
+pub fn expand_a_vecmul_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
+    if input.len() < 5 * WORD {
         return Err(PrecompileError::InputTooShort);
     }
     let mut offset = 0;
-    let n = read_word_usize(input, &mut offset)?;
     let q_big = read_word(input, &mut offset)?;
+    let n = read_word_usize(input, &mut offset)?;
     let k = read_word_usize(input, &mut offset)?;
     let l = read_word_usize(input, &mut offset)?;
 
     if q_big.bits() > 63 || k == 0 || l == 0 || n == 0 {
-        return Err(PrecompileError::InvalidParams("invalid matvecmul params"));
+        return Err(PrecompileError::InvalidParams("invalid expand_a_vecmul params"));
     }
     let q = q_big.iter_u64_digits().next().unwrap_or(0);
-    if q == 0 {
-        return Err(PrecompileError::InvalidParams("q must be nonzero"));
+    if q == 0 || k > 8 || l > 8 || n > 1024 {
+        return Err(PrecompileError::InvalidParams("params out of range"));
     }
     let q_bits = 64 - q.leading_zeros();
     let cb = (q_bits as usize + 7) / 8;
 
-    let a_total = k.checked_mul(l).and_then(|kl| kl.checked_mul(n)).and_then(|kln| kln.checked_mul(cb))
-        .ok_or(PrecompileError::Overflow("k*l*n*cb overflow"))?;
+    // Read rho (32 bytes from a 32-byte word — may have leading zeros)
+    let rho = &input[offset..offset + WORD];
+    offset += WORD;
+
+    // Read z[l] polynomials
     let z_total = l.checked_mul(n).and_then(|ln| ln.checked_mul(cb))
         .ok_or(PrecompileError::Overflow("l*n*cb overflow"))?;
-
-    if offset + a_total + z_total != input.len() {
+    if offset + z_total != input.len() {
         return Err(PrecompileError::BadLength);
-    }
-
-    // Decode A[k][l] and z[l] as flat u64 vectors
-    let mut a_polys: Vec<Vec<u64>> = Vec::with_capacity(k * l);
-    for _ in 0..(k * l) {
-        let mut poly = Vec::with_capacity(n);
-        for _ in 0..n {
-            poly.push(bytes_to_u64(&input[offset..offset + cb]));
-            offset += cb;
-        }
-        a_polys.push(poly);
     }
     let mut z_polys: Vec<Vec<u64>> = Vec::with_capacity(l);
     for _ in 0..l {
@@ -377,15 +373,43 @@ pub fn matvecmul_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
         z_polys.push(poly);
     }
 
-    // Compute result[i] = sum_j A[i][j] * z[j]
+    // ExpandA and multiply
     let mut out = Vec::with_capacity(k * n * cb);
     for i in 0..k {
-        let mut acc = fast::vec_mul_mod_fast(&a_polys[i * l], &z_polys[0], q);
-        for j in 1..l {
-            let prod = fast::vec_mul_mod_fast(&a_polys[i * l + j], &z_polys[j], q);
-            acc = fast::vec_add_mod_fast(&acc, &prod, q);
+        let mut acc: Option<Vec<u64>> = None;
+        for j in 0..l {
+            // ExpandA: A[i][j] = RejNTTPoly(SHAKE128(rho || j || i))
+            let mut seed = Vec::with_capacity(34);
+            seed.extend_from_slice(rho);
+            seed.push(j as u8);
+            seed.push(i as u8);
+            let mut xof = vec![0u8; 840];
+            shake_n(128, &seed, &mut xof);
+
+            let mut a_poly = Vec::with_capacity(n);
+            let mut p = 0;
+            while a_poly.len() < n {
+                if p + 2 >= xof.len() { break; }
+                let val = xof[p] as u64
+                    | ((xof[p + 1] as u64) << 8)
+                    | (((xof[p + 2] & 0x7F) as u64) << 16);
+                p += 3;
+                if val < q {
+                    a_poly.push(val);
+                }
+            }
+            if a_poly.len() < n {
+                return Err(PrecompileError::InvalidParams("ExpandA: insufficient XOF output"));
+            }
+
+            // Multiply and accumulate
+            let prod = fast::vec_mul_mod_fast(&a_poly, &z_polys[j], q);
+            acc = Some(match acc {
+                None => prod,
+                Some(a) => fast::vec_add_mod_fast(&a, &prod, q),
+            });
         }
-        out.extend_from_slice(&encode_vector_u64(&acc, cb));
+        out.extend_from_slice(&encode_vector_u64(&acc.unwrap(), cb));
     }
     Ok(out)
 }
