@@ -228,6 +228,232 @@ fn to_result(valid: bool) -> Option<Vec<u8>> {
     Some(result)
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  ML-DSA-44 (Dilithium2) full verification precompile
+// ═══════════════════════════════════════════════════════════════════
+
+mod dilithium {
+    use super::*;
+    use crate::precompile::shake_n;
+
+    pub const Q: u64 = 8380417;
+    pub const N: usize = 256;
+    pub const PSI: u64 = 1753;
+    pub const K: usize = 4;
+    pub const L: usize = 4;
+    pub const D: u32 = 13;
+    pub const TAU: usize = 39;
+    pub const GAMMA1: u64 = 1 << 17;
+    pub const GAMMA2: u64 = (Q - 1) / 88;
+    pub const BETA: u64 = TAU as u64 * 2;
+    pub const ALPHA: u64 = 2 * GAMMA2;
+    pub const M: u64 = (Q - 1) / ALPHA;
+    pub const PK_LEN: usize = 1312;
+    pub const SIG_LEN: usize = 2420;
+
+    static DIL_PARAMS: std::sync::LazyLock<FastNttParams> = std::sync::LazyLock::new(|| {
+        FastNttParams::new(Q, N, PSI).unwrap()
+    });
+
+    fn params() -> &'static FastNttParams { &DIL_PARAMS }
+
+    fn expand_a(rho: &[u8]) -> Vec<Vec<Vec<u64>>> {
+        let mut a = Vec::with_capacity(K);
+        for i in 0..K {
+            let mut row = Vec::with_capacity(L);
+            for j in 0..L {
+                let mut seed = Vec::with_capacity(34);
+                seed.extend_from_slice(rho);
+                seed.push(j as u8);
+                seed.push(i as u8);
+                let mut xof = [0u8; 840];
+                shake_n(128, &seed, &mut xof);
+                let mut poly = Vec::with_capacity(N);
+                let mut p = 0;
+                while poly.len() < N {
+                    let val = xof[p] as u64 | ((xof[p+1] as u64) << 8) | (((xof[p+2] & 0x7F) as u64) << 16);
+                    p += 3;
+                    if val < Q { poly.push(val); }
+                }
+                row.push(poly);
+            }
+            a.push(row);
+        }
+        a
+    }
+
+    fn sample_in_ball(c_tilde: &[u8]) -> Vec<u64> {
+        let mut xof = [0u8; 272];
+        shake_n(256, c_tilde, &mut xof);
+        let mut c = vec![0u64; N];
+        let signs = u64::from_le_bytes(xof[0..8].try_into().unwrap());
+        let mut pos = 8;
+        let mut si = 0;
+        for i in (N - TAU)..N {
+            loop {
+                let j = xof[pos] as usize; pos += 1;
+                if j <= i {
+                    c[i] = c[j];
+                    c[j] = if (signs >> si) & 1 == 1 { Q - 1 } else { 1 };
+                    si += 1; break;
+                }
+            }
+        }
+        c
+    }
+
+    fn decompose(r: u64) -> (u64, i64) {
+        let r0 = r % ALPHA;
+        let r0c = if r0 > ALPHA / 2 { r0 as i64 - ALPHA as i64 } else { r0 as i64 };
+        let rmr0 = (r as i64 - r0c) as u64;
+        if rmr0 == Q - 1 { (0, r0c - 1) } else { (rmr0 / ALPHA, r0c) }
+    }
+
+    fn use_hint(h: &[bool], r: &[u64]) -> Vec<u64> {
+        let mut w1 = Vec::with_capacity(N);
+        for i in 0..N {
+            let (r1, r0) = decompose(r[i]);
+            if h[i] {
+                if r0 > 0 { w1.push((r1 + 1) % M); }
+                else { w1.push((r1 + M - 1) % M); }
+            } else { w1.push(r1); }
+        }
+        w1
+    }
+
+    fn encode_w1(w1_polys: &[Vec<u64>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for poly in w1_polys {
+            let mut buf: u32 = 0; let mut bits: u32 = 0;
+            for &c in poly {
+                buf |= (c as u32) << bits; bits += 6;
+                while bits >= 8 { out.push((buf & 0xFF) as u8); buf >>= 8; bits -= 8; }
+            }
+        }
+        out
+    }
+
+    fn decode_pk(pk: &[u8]) -> Option<([u8; 32], Vec<Vec<u64>>)> {
+        if pk.len() != PK_LEN { return None; }
+        let mut rho = [0u8; 32];
+        rho.copy_from_slice(&pk[..32]);
+        let packed = &pk[32..];
+        let mut t1 = Vec::with_capacity(K);
+        let mut buf: u32 = 0; let mut bits: u32 = 0; let mut pos = 0;
+        for _ in 0..K {
+            let mut poly = Vec::with_capacity(N);
+            for _ in 0..N {
+                while bits < 10 { buf |= (packed[pos] as u32) << bits; bits += 8; pos += 1; }
+                poly.push((buf & 0x3FF) as u64); buf >>= 10; bits -= 10;
+            }
+            t1.push(poly);
+        }
+        Some((rho, t1))
+    }
+
+    fn decode_sig(sig: &[u8]) -> Option<(Vec<u8>, Vec<Vec<u64>>, Vec<Vec<bool>>)> {
+        if sig.len() != SIG_LEN { return None; }
+        let c_tilde = sig[..32].to_vec();
+        let z_packed = &sig[32..32 + L * N * 18 / 8];
+        let mut z = Vec::with_capacity(L);
+        let mut buf: u64 = 0; let mut bits: u32 = 0; let mut pos = 0;
+        for _ in 0..L {
+            let mut poly = Vec::with_capacity(N);
+            for _ in 0..N {
+                while bits < 18 { buf |= (z_packed[pos] as u64) << bits; bits += 8; pos += 1; }
+                let raw = buf & 0x3FFFF; buf >>= 18; bits -= 18;
+                poly.push(((GAMMA1 as i64 - raw as i64).rem_euclid(Q as i64)) as u64);
+            }
+            z.push(poly);
+        }
+        let h_packed = &sig[32 + L * N * 18 / 8..];
+        let mut h = vec![vec![false; N]; K]; let mut idx = 0;
+        for i in 0..K {
+            let limit = h_packed[80 + i] as usize;
+            while idx < limit { h[i][h_packed[idx] as usize] = true; idx += 1; }
+        }
+        Some((c_tilde, z, h))
+    }
+
+    /// ML-DSA-44 verify precompile.
+    /// Input: pk(1312) | sig(2420) | msg(var)
+    /// Output: 32 bytes (0x00..01 valid, 0x00..00 invalid)
+    pub fn dilithium_verify_precompile(input: &[u8]) -> Option<Vec<u8>> {
+        if input.len() < PK_LEN + SIG_LEN { return None; }
+        let pk_bytes = &input[..PK_LEN];
+        let sig_bytes = &input[PK_LEN..PK_LEN + SIG_LEN];
+        let msg = &input[PK_LEN + SIG_LEN..];
+
+        let (rho, t1) = decode_pk(pk_bytes)?;
+        let (c_tilde, z, h) = decode_sig(sig_bytes)?;
+        let p = params();
+
+        // Infinity norm check
+        let half_q = Q / 2;
+        for poly in &z {
+            for &c in poly {
+                let centered = if c > half_q { Q - c } else { c };
+                if centered >= GAMMA1 - BETA { return to_result(false); }
+            }
+        }
+
+        // ExpandA
+        let a_ntt = expand_a(&rho);
+
+        // NTT(z), Az
+        let z_ntt: Vec<Vec<u64>> = z.iter().map(|zi| fast::ntt_fw_fast(zi, p)).collect();
+        let mut az_ntt = Vec::with_capacity(K);
+        for i in 0..K {
+            let mut acc = fast::vec_mul_mod_fast(&a_ntt[i][0], &z_ntt[0], Q);
+            for j in 1..L { acc = fast::vec_add_mod_fast(&acc, &fast::vec_mul_mod_fast(&a_ntt[i][j], &z_ntt[j], Q), Q); }
+            az_ntt.push(acc);
+        }
+
+        // tr = SHAKE256(pk)[:64], mu = SHAKE256(tr || msg)[:64]
+        // Note: caller is responsible for FIPS 204 context wrapping if needed.
+        // For raw dilithium2: msg is passed as-is.
+        // For FIPS 204 ml_dsa_44: caller prepends 0x00||0x00 to msg before calling.
+        let mut tr = [0u8; 64];
+        shake_n(256, pk_bytes, &mut tr);
+        let mut mu_input = Vec::with_capacity(64 + msg.len());
+        mu_input.extend_from_slice(&tr);
+        mu_input.extend_from_slice(msg);
+        let mut mu = [0u8; 64];
+        shake_n(256, &mu_input, &mut mu);
+
+        // Challenge
+        let c_poly = sample_in_ball(&c_tilde);
+        let c_ntt = fast::ntt_fw_fast(&c_poly, p);
+
+        // t1 << d, NTT
+        let t1_d_ntt: Vec<Vec<u64>> = t1.iter()
+            .map(|ti| fast::ntt_fw_fast(&ti.iter().map(|&x| (x << D) % Q).collect::<Vec<_>>(), p))
+            .collect();
+
+        // w_approx → UseHint → w1
+        let mut w1_polys = Vec::with_capacity(K);
+        for i in 0..K {
+            let ct1 = fast::vec_mul_mod_fast(&c_ntt, &t1_d_ntt[i], Q);
+            let w_ntt: Vec<u64> = az_ntt[i].iter().zip(ct1.iter())
+                .map(|(&a, &b)| if a >= b { a - b } else { Q + a - b }).collect();
+            let w_approx = fast::ntt_inv_fast(&w_ntt, p);
+            w1_polys.push(use_hint(&h[i], &w_approx));
+        }
+
+        // Recompute c_tilde
+        let w1_enc = encode_w1(&w1_polys);
+        let mut hash_input = Vec::with_capacity(64 + w1_enc.len());
+        hash_input.extend_from_slice(&mu);
+        hash_input.extend_from_slice(&w1_enc);
+        let mut c_tilde_check = [0u8; 32];
+        shake_n(256, &hash_input, &mut c_tilde_check);
+
+        to_result(c_tilde_check == c_tilde.as_slice())
+    }
+}
+
+pub use dilithium::dilithium_verify_precompile;
+
 /// Full Falcon-512 verification pipeline on compact data.
 /// Input: salt||msg, s2_compact, ntth_compact (public key in NTT domain).
 /// Returns true if signature is valid.

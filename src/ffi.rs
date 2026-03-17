@@ -92,6 +92,34 @@ pub unsafe extern "C" fn eth_ntt_vecaddmod_precompile(
     }
 }
 
+/// Element-wise (a[i] - b[i]) mod q. Same format as VECADDMOD.
+#[no_mangle]
+pub unsafe extern "C" fn eth_ntt_vecsubmod_precompile(
+    input: *const u8, input_len: usize,
+    output_out: *mut *mut u8, output_len_out: *mut usize,
+) -> i32 {
+    let input = slice::from_raw_parts(input, input_len);
+    match crate::ntt_vecsubmod_precompile(input) {
+        Ok(output) => { write_output(output, output_out, output_len_out); 0 }
+        Err(e) => error_code(e),
+    }
+}
+
+/// Matrix-vector product in NTT domain.
+/// Input: n(32) | q(32) | k(32) | l(32) | A(k*l*n*cb) | z(l*n*cb)
+/// Output: k*n*cb bytes
+#[no_mangle]
+pub unsafe extern "C" fn eth_ntt_matvecmul_precompile(
+    input: *const u8, input_len: usize,
+    output_out: *mut *mut u8, output_len_out: *mut usize,
+) -> i32 {
+    let input = slice::from_raw_parts(input, input_len);
+    match crate::matvecmul_precompile(input) {
+        Ok(output) => { write_output(output, output_out, output_len_out); 0 }
+        Err(e) => error_code(e),
+    }
+}
+
 /// Falcon-512 verify.
 /// Input: s2(1024, 512×uint16 BE) | ntth(1024, 512×uint16 BE) | salt_msg(var)
 /// Output: 32 bytes (0x00..01 valid, 0x00..00 invalid)
@@ -102,6 +130,36 @@ pub unsafe extern "C" fn eth_ntt_falcon_verify(
 ) -> i32 {
     let data = slice::from_raw_parts(input, input_len);
     match falcon::falcon_verify_precompile(data) {
+        Some(out) => { write_output(out, output_out, output_len_out); 0 }
+        None => -1,
+    }
+}
+
+/// Generic SHAKE-N (SHAKE128 / SHAKE256).
+/// Input: security(32 BE) | output_len(32 BE) | data(var)
+/// Output: output_len bytes of SHAKE output.
+#[no_mangle]
+pub unsafe extern "C" fn eth_ntt_shake(
+    input: *const u8, input_len: usize,
+    output_out: *mut *mut u8, output_len_out: *mut usize,
+) -> i32 {
+    let data = slice::from_raw_parts(input, input_len);
+    match crate::shake_precompile(data) {
+        Ok(out) => { write_output(out, output_out, output_len_out); 0 }
+        Err(e) => error_code(e),
+    }
+}
+
+/// ML-DSA-44 (Dilithium2) full verification.
+/// Input: pk(1312) | sig(2420) | msg(var)
+/// Output: 32 bytes (0x00..01 valid, 0x00..00 invalid)
+#[no_mangle]
+pub unsafe extern "C" fn eth_ntt_dilithium_verify(
+    input: *const u8, input_len: usize,
+    output_out: *mut *mut u8, output_len_out: *mut usize,
+) -> i32 {
+    let data = slice::from_raw_parts(input, input_len);
+    match falcon::dilithium_verify_precompile(data) {
         Some(out) => { write_output(out, output_out, output_len_out); 0 }
         None => -1,
     }

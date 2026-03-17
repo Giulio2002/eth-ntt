@@ -70,10 +70,37 @@ void eth_ntt_vec_add_mod(
     const uint64_t *a, const uint64_t *b,
     uint64_t *output, size_t n, uint64_t q);
 
+/* Element-wise modular subtraction: result[i] = (a[i] - b[i]) mod q.
+ * Same input format as VECMULMOD/VECADDMOD. */
+int32_t eth_ntt_vecsubmod_precompile(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
+/* Matrix-vector product in NTT domain.
+ * Input: n(32 BE) | q(32 BE) | k(32 BE) | l(32 BE) | A(k*l*n*cb) | z(l*n*cb)
+ * Output: k*n*cb bytes — result[i] = sum_j(A[i][j] * z[j]) mod q */
+int32_t eth_ntt_matvecmul_precompile(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
+/* Generic SHAKE-N (SHAKE128 / SHAKE256).
+ * Input: security(32 BE) | output_len(32 BE) | data(var)
+ * security must be 128 or 256. Returns output_len bytes. */
+int32_t eth_ntt_shake(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
 /* Falcon-512 verify: SHAKE256 HTP + NTT + VECMUL + INTT + norm check.
  * Input: s2(1024, 512×uint16 BE) | ntth(1024, 512×uint16 BE) | salt_msg(var)
  * Output: 32 bytes (0x00..01 valid, 0x00..00 invalid) */
 int32_t eth_ntt_falcon_verify(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
+/* ML-DSA-44 (Dilithium2) full verification.
+ * Input: pk(1312) | sig(2420) | msg(var)
+ * Output: 32 bytes (0x00..01 valid, 0x00..00 invalid) */
+int32_t eth_ntt_dilithium_verify(
     const uint8_t *input, size_t input_len,
     uint8_t **output_out, size_t *output_len_out);
 

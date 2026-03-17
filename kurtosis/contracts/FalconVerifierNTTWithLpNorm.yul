@@ -1,5 +1,5 @@
 /// @title FalconVerifierNTTWithLpNorm — Falcon-512 verifier using NTT + LpNorm precompiles
-/// Uses 0x12 (NTT_FW), 0x13 (NTT_INV), 0x14 (VECMULMOD), 0x16 (SHAKE256), 0x18 (LP_NORM)
+/// Uses 0x12 (NTT_FW), 0x13 (NTT_INV), 0x14 (VECMULMOD), 0x16 (SHAKE), 0x18 (LP_NORM)
 /// No on-chain norm loop — delegated to LP_NORM precompile.
 /// Calldata: s2(1024, 512×uint16 BE) | ntth(1024, 512×uint16 BE) | salt_msg(var)
 
@@ -15,9 +15,11 @@ object "FalconVerifierNTTWithLpNorm" {
 
             // Step 1: SHAKE256(salt_msg) → 1024 bytes hashed at mem[0xc00]
             // (placed at 0xc00 so we can build the norm input contiguously later)
-            mstore(0, 1024)
-            calldatacopy(0x20, 0x800, smLen)
-            if iszero(staticcall(gas(), 0x16, 0, add(0x20, smLen), 0xc00, 0x400)) { revert(0,0) }
+            // SHAKE precompile format: security(32) | output_len(32) | data
+            mstore(0, 256)     // security = 256
+            mstore(0x20, 1024) // output_len
+            calldatacopy(0x40, 0x800, smLen)
+            if iszero(staticcall(gas(), 0x16, 0, add(0x40, smLen), 0xc00, 0x400)) { revert(0,0) }
 
             // Step 2: NTT_FW(s2) — header: n(32)|q(32)|psi(32) + coeffs(1024)
             mstore(0x00, 512)

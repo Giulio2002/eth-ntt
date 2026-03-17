@@ -450,7 +450,147 @@ criterion_group!(
     bench_compact_norm,
     bench_compact_full_verify,
     bench_falcon_verify_precompile,
+    bench_shake_precompile,
+    bench_lp_norm_precompile,
+    bench_dilithium_precompile_ntt,
 );
+
+fn bench_shake_precompile(c: &mut Criterion) {
+    let mut group = c.benchmark_group("shake_precompile");
+
+    // SHAKE-128 with 32 bytes input, 168 bytes output (one rate block)
+    let mut input128 = Vec::new();
+    input128.extend_from_slice(&128u64.to_be_bytes());
+    input128.extend_from_slice(&[0u8; 24]);
+    input128.extend_from_slice(&168u64.to_be_bytes());
+    input128.extend_from_slice(&[0u8; 24]);
+    input128.extend_from_slice(&[0x42u8; 32]);
+    let input128 = {
+        let mut v = vec![0u8; 32]; // N = 128
+        v[31] = 128;
+        let mut o = vec![0u8; 32]; // output_len = 168
+        o[31] = 168;
+        v.extend_from_slice(&o);
+        v.extend_from_slice(&[0x42u8; 32]);
+        v
+    };
+    group.bench_function("shake128/32B_in_168B_out", |b| {
+        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input128)))
+    });
+
+    // SHAKE-256 with 32 bytes input, 32 bytes output
+    let input256_32 = {
+        let mut v = vec![0u8; 32];
+        v[30] = 1; // N = 256
+        let mut o = vec![0u8; 32];
+        o[31] = 32; // output_len = 32
+        v.extend_from_slice(&o);
+        v.extend_from_slice(&[0x42u8; 32]);
+        v
+    };
+    group.bench_function("shake256/32B_in_32B_out", |b| {
+        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input256_32)))
+    });
+
+    // SHAKE-256 with 64+768=832 bytes input (Dilithium challenge hash size), 32 bytes output
+    let input256_big = {
+        let mut v = vec![0u8; 32];
+        v[30] = 1; // N = 256
+        let mut o = vec![0u8; 32];
+        o[31] = 32; // output_len = 32
+        v.extend_from_slice(&o);
+        v.extend_from_slice(&[0x42u8; 832]); // mu(64) + w1(768)
+        v
+    };
+    group.bench_function("shake256/832B_in_32B_out", |b| {
+        b.iter(|| pq_eth_precompiles::shake_precompile(black_box(&input256_big)))
+    });
+
+    group.finish();
+}
+
+fn bench_lp_norm_precompile(c: &mut Criterion) {
+    let mut group = c.benchmark_group("lp_norm_precompile");
+
+    // Falcon-512: q=12289, n=512, cb=2
+    let q: u64 = 12289;
+    let n: u64 = 512;
+    let bound: u128 = 34034726;
+    let cb: u64 = 2;
+    let mut input = Vec::new();
+    input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&q.to_be_bytes());
+    input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&n.to_be_bytes());
+    input.extend_from_slice(&[0u8; 16]); input.extend_from_slice(&bound.to_be_bytes());
+    input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&cb.to_be_bytes());
+    for _ in 0..3 { // s1, s2, hashed
+        for i in 0..512u16 {
+            input.extend_from_slice(&(i % q as u16).to_be_bytes());
+        }
+    }
+    group.bench_function("falcon512", |b| {
+        b.iter(|| falcon::lp_norm_precompile(black_box(&input)))
+    });
+
+    // Dilithium: q=8380417, n=256, cb=3
+    let q: u64 = 8380417;
+    let n: u64 = 256;
+    let bound: u128 = 1 << 40;
+    let cb: u64 = 3;
+    let mut input = Vec::new();
+    input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&q.to_be_bytes());
+    input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&n.to_be_bytes());
+    input.extend_from_slice(&[0u8; 16]); input.extend_from_slice(&bound.to_be_bytes());
+    input.extend_from_slice(&[0u8; 24]); input.extend_from_slice(&cb.to_be_bytes());
+    for _ in 0..3 {
+        for i in 0..256u32 {
+            let v = i % q as u32;
+            input.push((v >> 16) as u8);
+            input.push((v >> 8) as u8);
+            input.push(v as u8);
+        }
+    }
+    group.bench_function("dilithium_n256", |b| {
+        b.iter(|| falcon::lp_norm_precompile(black_box(&input)))
+    });
+
+    group.finish();
+}
+
+fn bench_dilithium_precompile_ntt(c: &mut Criterion) {
+    let mut group = c.benchmark_group("precompile_ntt_dilithium");
+
+    let q = 8380417u64;
+    let n = 256usize;
+    let psi = fast_pow_mod(7, (q - 1) / (2 * n as u64), q);
+    let params = FieldParams::new(BigUint::from(q), n, BigUint::from(psi)).unwrap();
+    let poly: Vec<BigUint> = (0..n).map(|i| BigUint::from((i as u64 * 37) % q)).collect();
+    let input = encode_ntt_input(&params, &poly);
+
+    group.bench_function("ntt_fw", |b| {
+        b.iter(|| ntt_fw_precompile(black_box(&input)))
+    });
+
+    let fwd_out = ntt_fw_precompile(&input).unwrap();
+    let ntt_poly = decode_output(&fwd_out, n, 3);
+    let inv_input = encode_ntt_input(&params, &ntt_poly);
+    group.bench_function("ntt_inv", |b| {
+        b.iter(|| ntt_inv_precompile(black_box(&inv_input)))
+    });
+
+    let a: Vec<BigUint> = (0..n).map(|i| BigUint::from((i as u64 * 37) % q)).collect();
+    let b_vec: Vec<BigUint> = (0..n).map(|i| BigUint::from((i as u64 * 53) % q)).collect();
+    let mul_input = encode_vec_input(&BigUint::from(q), n, &a, &b_vec);
+    group.bench_function("vecmulmod", |b| {
+        b.iter(|| ntt_vecmulmod_precompile(black_box(&mul_input)))
+    });
+
+    let add_input = encode_vec_input(&BigUint::from(q), n, &a, &b_vec);
+    group.bench_function("vecaddmod", |b| {
+        b.iter(|| ntt_vecaddmod_precompile(black_box(&add_input)))
+    });
+
+    group.finish();
+}
 
 fn bench_falcon_verify_precompile(c: &mut Criterion) {
     // Build a realistic precompile input

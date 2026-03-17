@@ -303,6 +303,174 @@ pub fn ntt_vecaddmod_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError
     Ok(encode_vector(&result, coeff_bytes))
 }
 
+/// Execute `NTT_VECSUBMOD` precompile.
+/// Same format as VECADDMOD but computes `result[i] = (a[i] - b[i]) mod q`.
+pub fn ntt_vecsubmod_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
+    if let Some((q_val, _n, a, b)) = try_decode_vec_fast(input)? {
+        let q_bits = 64 - q_val.leading_zeros();
+        let cb = (q_bits as usize + 7) / 8;
+        let result: Vec<u64> = a.iter().zip(b.iter())
+            .map(|(&ai, &bi)| if ai >= bi { ai - bi } else { q_val + ai - bi })
+            .collect();
+        return Ok(encode_vector_u64(&result, cb));
+    }
+    let (q, _n, a, b) = decode_vec_input(input)?;
+    let coeff_bytes = (q.bits() as usize + 7) / 8;
+    let result: Vec<BigUint> = a.iter().zip(b.iter())
+        .map(|(ai, bi)| if ai >= bi { (ai - bi) % &q } else { &q - ((bi - ai) % &q) })
+        .collect();
+    Ok(encode_vector(&result, coeff_bytes))
+}
+
+/// Execute `MATVECMUL` precompile.
+///
+/// Input: `n(32) | q(32) | k(32) | l(32) | A(k×l×n×cb) | z(l×n×cb)`
+/// Output: `k×n×cb` bytes — result of A × z (matrix-vector product in NTT domain).
+///
+/// Computes: `result[i] = sum_j(A[i][j] * z[j])` element-wise mod q.
+pub fn matvecmul_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
+    if input.len() < 4 * WORD {
+        return Err(PrecompileError::InputTooShort);
+    }
+    let mut offset = 0;
+    let n = read_word_usize(input, &mut offset)?;
+    let q_big = read_word(input, &mut offset)?;
+    let k = read_word_usize(input, &mut offset)?;
+    let l = read_word_usize(input, &mut offset)?;
+
+    if q_big.bits() > 63 || k == 0 || l == 0 || n == 0 {
+        return Err(PrecompileError::InvalidParams("invalid matvecmul params"));
+    }
+    let q = q_big.iter_u64_digits().next().unwrap_or(0);
+    if q == 0 {
+        return Err(PrecompileError::InvalidParams("q must be nonzero"));
+    }
+    let q_bits = 64 - q.leading_zeros();
+    let cb = (q_bits as usize + 7) / 8;
+
+    let a_total = k.checked_mul(l).and_then(|kl| kl.checked_mul(n)).and_then(|kln| kln.checked_mul(cb))
+        .ok_or(PrecompileError::Overflow("k*l*n*cb overflow"))?;
+    let z_total = l.checked_mul(n).and_then(|ln| ln.checked_mul(cb))
+        .ok_or(PrecompileError::Overflow("l*n*cb overflow"))?;
+
+    if offset + a_total + z_total != input.len() {
+        return Err(PrecompileError::BadLength);
+    }
+
+    // Decode A[k][l] and z[l] as flat u64 vectors
+    let mut a_polys: Vec<Vec<u64>> = Vec::with_capacity(k * l);
+    for _ in 0..(k * l) {
+        let mut poly = Vec::with_capacity(n);
+        for _ in 0..n {
+            poly.push(bytes_to_u64(&input[offset..offset + cb]));
+            offset += cb;
+        }
+        a_polys.push(poly);
+    }
+    let mut z_polys: Vec<Vec<u64>> = Vec::with_capacity(l);
+    for _ in 0..l {
+        let mut poly = Vec::with_capacity(n);
+        for _ in 0..n {
+            poly.push(bytes_to_u64(&input[offset..offset + cb]));
+            offset += cb;
+        }
+        z_polys.push(poly);
+    }
+
+    // Compute result[i] = sum_j A[i][j] * z[j]
+    let mut out = Vec::with_capacity(k * n * cb);
+    for i in 0..k {
+        let mut acc = fast::vec_mul_mod_fast(&a_polys[i * l], &z_polys[0], q);
+        for j in 1..l {
+            let prod = fast::vec_mul_mod_fast(&a_polys[i * l + j], &z_polys[j], q);
+            acc = fast::vec_add_mod_fast(&acc, &prod, q);
+        }
+        out.extend_from_slice(&encode_vector_u64(&acc, cb));
+    }
+    Ok(out)
+}
+
+/// Read a 32-byte big-endian word as a plain usize (no input-size validation).
+fn read_word_usize_raw(data: &[u8], offset: &mut usize) -> Result<usize, PrecompileError> {
+    let val = read_word(data, offset)?;
+    if val.bits() > 64 {
+        return Err(PrecompileError::Overflow("value exceeds 64 bits"));
+    }
+    let bytes = val.to_bytes_be();
+    let mut buf = [0u8; 8];
+    let start = 8usize.saturating_sub(bytes.len());
+    buf[start..start + bytes.len()].copy_from_slice(&bytes);
+    Ok(u64::from_be_bytes(buf) as usize)
+}
+
+/// SHAKE-N sponge using raw Keccak-f[1600].
+///
+/// Accepts any security level N in [1, 256].
+/// capacity = ceil(2N / 8) bytes, rate = 200 - capacity bytes.
+/// Domain separator: 0x1F (SHAKE), padding: pad10*1.
+pub fn shake_n(n: usize, data: &[u8], output: &mut [u8]) {
+    let capacity_bytes = (2 * n + 7) / 8;
+    let rate = 200 - capacity_bytes;
+    let mut state = [0u64; 25];
+
+    // Absorb
+    let mut pos = 0;
+    for &byte in data {
+        state[pos / 8] ^= (byte as u64) << (8 * (pos % 8));
+        pos += 1;
+        if pos == rate {
+            keccak::f1600(&mut state);
+            pos = 0;
+        }
+    }
+
+    // Pad: SHAKE domain separator 0x1F + pad10*1
+    state[pos / 8] ^= 0x1F_u64 << (8 * (pos % 8));
+    state[(rate - 1) / 8] ^= 0x80_u64 << (8 * ((rate - 1) % 8));
+    keccak::f1600(&mut state);
+
+    // Squeeze
+    let mut squeezed = 0;
+    while squeezed < output.len() {
+        let block = rate.min(output.len() - squeezed);
+        for i in 0..block {
+            output[squeezed + i] = (state[i / 8] >> (8 * (i % 8))) as u8;
+        }
+        squeezed += block;
+        if squeezed < output.len() {
+            keccak::f1600(&mut state);
+        }
+    }
+}
+
+/// Execute `SHAKE` precompile (generic SHAKE-N).
+///
+/// Input: `N(32 BE) | output_len(32 BE) | data(var)`
+///
+/// N must be in [1, 256]. Returns `output_len` bytes of SHAKE-N output.
+pub fn shake_precompile(input: &[u8]) -> Result<Vec<u8>, PrecompileError> {
+    if input.len() < 2 * WORD {
+        return Err(PrecompileError::InputTooShort);
+    }
+    const MAX_OUTPUT: usize = 1 << 20; // 1 MB
+
+    let mut offset = 0;
+    let n = read_word_usize_raw(input, &mut offset)?;
+    let output_len = read_word_usize_raw(input, &mut offset)?;
+
+    if n == 0 || n > 256 {
+        return Err(PrecompileError::InvalidParams("N must be in [1, 256]"));
+    }
+    if output_len > MAX_OUTPUT {
+        return Err(PrecompileError::Overflow("output_len exceeds 1 MB"));
+    }
+
+    let data = &input[offset..];
+    let mut output = vec![0u8; output_len];
+    shake_n(n, data, &mut output);
+    Ok(output)
+}
+
 // ─── Calldata encoders (for building inputs from Rust) ───
 
 /// Encode calldata for NTT_FW / NTT_INV.
@@ -520,5 +688,101 @@ mod tests {
         // coefficients start at byte 96, cb=1 for q=17
         assert_eq!(&input[96..100], &[1, 2, 3, 4]);
         assert_eq!(input.len(), 100); // 96 header + 4 coefficients
+    }
+
+    #[test]
+    fn test_shake_precompile_256() {
+        let mut input = Vec::new();
+        input.extend_from_slice(&encode_word(256)); // security
+        input.extend_from_slice(&encode_word(64));  // output_len
+        input.extend_from_slice(b"test data");
+        let output = shake_precompile(&input).unwrap();
+        assert_eq!(output.len(), 64);
+
+        // Deterministic
+        let output2 = shake_precompile(&input).unwrap();
+        assert_eq!(output, output2);
+    }
+
+    #[test]
+    fn test_shake_precompile_128() {
+        let mut input = Vec::new();
+        input.extend_from_slice(&encode_word(128)); // security
+        input.extend_from_slice(&encode_word(32));  // output_len
+        input.extend_from_slice(b"test data");
+        let output = shake_precompile(&input).unwrap();
+        assert_eq!(output.len(), 32);
+
+        // SHAKE128 and SHAKE256 produce different output
+        let mut input256 = Vec::new();
+        input256.extend_from_slice(&encode_word(256));
+        input256.extend_from_slice(&encode_word(32));
+        input256.extend_from_slice(b"test data");
+        let output256 = shake_precompile(&input256).unwrap();
+        assert_ne!(output, output256);
+    }
+
+    #[test]
+    fn test_shake_precompile_invalid_n() {
+        // N=0 is invalid
+        let mut input = Vec::new();
+        input.extend_from_slice(&encode_word(0));
+        input.extend_from_slice(&encode_word(32));
+        input.extend_from_slice(b"test");
+        assert!(shake_precompile(&input).is_err());
+
+        // N=257 is invalid
+        let mut input = Vec::new();
+        input.extend_from_slice(&encode_word(257));
+        input.extend_from_slice(&encode_word(32));
+        input.extend_from_slice(b"test");
+        assert!(shake_precompile(&input).is_err());
+    }
+
+    #[test]
+    fn test_shake_n_matches_sha3_crate() {
+        use sha3::digest::{ExtendableOutput, Update, XofReader};
+
+        let data = b"test data for cross-check";
+
+        // SHAKE128: our sponge must match sha3 crate
+        let mut ours_128 = [0u8; 64];
+        shake_n(128, data, &mut ours_128);
+        let mut theirs_128 = [0u8; 64];
+        let mut h = sha3::Shake128::default();
+        h.update(data);
+        h.finalize_xof().read(&mut theirs_128);
+        assert_eq!(ours_128, theirs_128, "SHAKE-128 mismatch vs sha3 crate");
+
+        // SHAKE256: our sponge must match sha3 crate
+        let mut ours_256 = [0u8; 64];
+        shake_n(256, data, &mut ours_256);
+        let mut theirs_256 = [0u8; 64];
+        let mut h = sha3::Shake256::default();
+        h.update(data);
+        h.finalize_xof().read(&mut theirs_256);
+        assert_eq!(ours_256, theirs_256, "SHAKE-256 mismatch vs sha3 crate");
+
+        // Different N → different output
+        assert_ne!(ours_128, ours_256);
+    }
+
+    #[test]
+    fn test_shake_n_arbitrary() {
+        // Any N in [1, 256] should work and produce deterministic output
+        for n in [1, 2, 4, 7, 16, 42, 100, 128, 200, 255, 256] {
+            let mut out1 = [0u8; 32];
+            let mut out2 = [0u8; 32];
+            shake_n(n, b"hello", &mut out1);
+            shake_n(n, b"hello", &mut out2);
+            assert_eq!(out1, out2, "SHAKE-{n} not deterministic");
+        }
+
+        // Different N → different output (for most pairs)
+        let mut out_1 = [0u8; 32];
+        let mut out_128 = [0u8; 32];
+        shake_n(1, b"hello", &mut out_1);
+        shake_n(128, b"hello", &mut out_128);
+        assert_ne!(out_1, out_128);
     }
 }

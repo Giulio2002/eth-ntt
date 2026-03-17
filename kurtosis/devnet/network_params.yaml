@@ -11,5 +11,6 @@ network_params:
   num_validator_keys_per_node: 128
   electra_fork_epoch: 0
   fulu_fork_epoch: 0
+  prefunded_accounts: '{"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266": {"balance": "10000ETH"}}'
 
 additional_services: []

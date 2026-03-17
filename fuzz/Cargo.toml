@@ -47,3 +47,17 @@ path = "fuzz_targets/fuzz_falcon_compact.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_shake"
+path = "fuzz_targets/fuzz_shake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dilithium_ntt"
+path = "fuzz_targets/fuzz_dilithium_ntt.rs"
+test = false
+doc = false
+bench = false

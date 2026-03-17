@@ -176,6 +176,42 @@ func u64ptr(s []uint64) *C.uint64_t {
 	return (*C.uint64_t)(unsafe.Pointer(&s[0]))
 }
 
+// VecSubModPrecompile executes element-wise modular subtraction.
+func VecSubModPrecompile(input []byte) ([]byte, error) {
+	if len(input) == 0 {
+		return nil, ErrInputTooShort
+	}
+	var outPtr *C.uint8_t
+	var outLen C.size_t
+	rc := C.eth_ntt_vecsubmod_precompile((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	return collectOutput(rc, outPtr, outLen)
+}
+
+// MatVecMulPrecompile executes matrix-vector product in NTT domain.
+// Input: n(32) | q(32) | k(32) | l(32) | A(k*l*n*cb) | z(l*n*cb)
+func MatVecMulPrecompile(input []byte) ([]byte, error) {
+	if len(input) < 128 {
+		return nil, ErrInputTooShort
+	}
+	var outPtr *C.uint8_t
+	var outLen C.size_t
+	rc := C.eth_ntt_matvecmul_precompile((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	return collectOutput(rc, outPtr, outLen)
+}
+
+// ShakePrecompile runs generic SHAKE-N (SHAKE128 or SHAKE256).
+// Input: security(32 BE) | output_len(32 BE) | data(var)
+// security must be 128 or 256.
+func ShakePrecompile(input []byte) ([]byte, error) {
+	if len(input) < 64 {
+		return nil, ErrInputTooShort
+	}
+	var outPtr *C.uint8_t
+	var outLen C.size_t
+	rc := C.eth_ntt_shake((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	return collectOutput(rc, outPtr, outLen)
+}
+
 // FalconVerify runs full Falcon-512 verification.
 // Input: s2(1024, 512×uint16 BE) | ntth(1024, 512×uint16 BE) | salt_msg(var)
 func FalconVerify(input []byte) ([]byte, error) {
@@ -185,6 +221,18 @@ func FalconVerify(input []byte) ([]byte, error) {
 	var outPtr *C.uint8_t
 	var outLen C.size_t
 	rc := C.eth_ntt_falcon_verify((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	return collectOutput(rc, outPtr, outLen)
+}
+
+// DilithiumVerify runs full ML-DSA-44 (Dilithium2) verification.
+// Input: pk(1312) | sig(2420) | msg(var)
+func DilithiumVerify(input []byte) ([]byte, error) {
+	if len(input) < 3732 {
+		return nil, ErrInputTooShort
+	}
+	var outPtr *C.uint8_t
+	var outLen C.size_t
+	rc := C.eth_ntt_dilithium_verify((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
 	return collectOutput(rc, outPtr, outLen)
 }
 

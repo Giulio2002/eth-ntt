@@ -1,5 +1,5 @@
 /// @title FalconVerifierNTT — Falcon-512 verifier using generic NTT precompiles
-/// Uses 0x12 (NTT_FW), 0x13 (NTT_INV), 0x14 (VECMULMOD), 0x16 (SHAKE256)
+/// Uses 0x12 (NTT_FW), 0x13 (NTT_INV), 0x14 (VECMULMOD), 0x16 (SHAKE)
 /// On-chain norm check loop.
 /// Calldata: s2(1024, 512×uint16 BE) | ntth(1024, 512×uint16 BE) | salt_msg(var)
 ///
@@ -17,11 +17,12 @@ object "FalconVerifierNTT" {
             let smLen := sub(cd, 0x800) // salt_msg length
 
             // ── Step 1: SHAKE256 hash-to-point ──
-            // Build: outlen(32) | salt_msg
+            // Build: security(32) | outlen(32) | salt_msg
             // Output 1024 bytes (512×uint16 BE) to mem[0x800]
-            mstore(0, 1024)
-            calldatacopy(0x20, 0x800, smLen)
-            let shakeInLen := add(0x20, smLen)
+            mstore(0, 256)     // security = 256
+            mstore(0x20, 1024) // output_len
+            calldatacopy(0x40, 0x800, smLen)
+            let shakeInLen := add(0x40, smLen)
             if iszero(staticcall(gas(), 0x16, 0, shakeInLen, 0x800, 0x400)) { revert(0,0) }
 
             // ── Step 2: NTT_FW(s2) ──
