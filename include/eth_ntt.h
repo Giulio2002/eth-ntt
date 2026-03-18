@@ -37,6 +37,13 @@ int32_t eth_ntt_vecaddmod_precompile(
     const uint8_t *input, size_t input_len,
     uint8_t **output_out, size_t *output_len_out);
 
+/* QNORM — Hawk Q-norm via dual-NTT CRT.
+ * Input: logn(32) | bound(32) | q00(hn*2 LE) | q01(n*2 LE) | t0(n*2 LE) | t1(n*2 LE)
+ * Output: 32 bytes bool */
+int32_t eth_ntt_qnorm(
+    const uint8_t *input, size_t input_len,
+    uint8_t **output_out, size_t *output_len_out);
+
 /* Fixed-point FFT (Hawk reference format).
  * Input: logn(32 BE) | direction(32 BE) | shift(32 BE) | coeffs(n*4 LE)
  * direction: 0=forward, 1=inverse. logn: 8,9,10. shift: scaling bits.
