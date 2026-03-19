@@ -212,6 +212,19 @@ func ShakePrecompile(input []byte) ([]byte, error) {
 	return collectOutput(rc, outPtr, outLen)
 }
 
+// Shake256HTPPrecompile runs SHAKE256 hash-to-point with rejection sampling.
+// Input: output_len(32 BE) | data(var)
+// Returns output_len bytes of rejection-sampled coefficients mod Q=12289, packed as uint16 BE.
+func Shake256HTPPrecompile(input []byte) ([]byte, error) {
+	if len(input) < 32 {
+		return nil, ErrInputTooShort
+	}
+	var outPtr *C.uint8_t
+	var outLen C.size_t
+	rc := C.eth_ntt_shake256_htp((*C.uint8_t)(unsafe.Pointer(&input[0])), C.size_t(len(input)), &outPtr, &outLen)
+	return collectOutput(rc, outPtr, outLen)
+}
+
 // FalconVerify runs full Falcon-512 verification.
 // Input: s2(1024, 512×uint16 BE) | ntth(1024, 512×uint16 BE) | salt_msg(var)
 func FalconVerify(input []byte) ([]byte, error) {
